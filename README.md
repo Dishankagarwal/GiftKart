@@ -66,7 +66,7 @@ ShaadiLedger is a personalized wedding gift registry. It helps couples publish a
 ### Guest access and privacy
 
 - Guests do not need accounts. Collect only their name and one contact method (email or phone).
-- Guest confirmation links use cryptographically random tokens; store only token hashes. Tokens expire and can be revoked.
+- Guest confirmation links use cryptographically random tokens; store only token hashes. Tokens expire after 90 days by default and can be revoked.
 - A valid token reveals only the associated reservation/contribution status and the information needed for that guest's flow.
 - Public endpoints expose only published registry and gift information. Guest contact details, reservation identities, payment reports, and member data are private.
 - No payment proof is collected or stored in Phase 1.
@@ -90,7 +90,124 @@ Business statuses (such as `reserved`, `pledged`, `payment_reported`, `verified`
 | 9 | Contribution confirmation and status | Guest | Confirm submission and securely check reservation/contribution status. |
 | 10 | Reservation and contribution management | Couple | Release reservations and review, verify, or reject reports. |
 
-Every screen needs loading, empty, error, and success behavior as appropriate. Gift-unavailable is a business outcome shown by the interface, not a generic loading/error state. Design mobile-first and include keyboard, focus, validation, and accessible-label behavior.
+The inventory has 10 product areas. Account access is one area with two modes (sign in and create account), not two unrelated experiences. The shared header and footer are persistent site chrome, not separate product screens.
+
+## UX specification — review draft
+
+This specification describes the intended Phase 1 behavior for the 10 product areas. It is the basis for wireframe review; it does not mean the screens or backend are fully implemented. The current UI is a static prototype with sample content.
+
+### Global navigation and layout
+
+- Keep the ShaadiLedger brand/header visible across landing, account, couple, and guest pages. The brand returns to the landing page.
+- In the signed-out header, show **Find a registry** and **Couple sign in**. “Create your registry” and “Start your registry” both open account creation; a successful account step continues to registry setup. Sign-in remains a separate mode with a link to create an account.
+- When signed in, replace guest/account actions with couple navigation: **Dashboard**, **Registry preview**, and an account menu with partner invitation, settings, and sign out. Mark the current section visually and with `aria-current`.
+- Do not imply that a public registry slug is a secret. Guests open their shared registry URL directly; the search/link entry must not expose guest details.
+- On small screens, retain the brand and a clearly labeled menu button. The menu opens/closes by keyboard and touch, traps no focus unnecessarily, closes after navigation, and exposes the same destinations as desktop.
+- Use a consistent footer for informational navigation and a compact prototype-only screen switcher in development. Remove the prototype switcher from production.
+- Page navigation updates the URL and browser history. Back/forward must restore the correct screen. On route changes, move focus to the page heading and reset scroll to the top without disrupting reduced-motion settings.
+- Show one page-level heading, preserve visible focus, support keyboard-only operation, use labeled fields and useful inline errors, and maintain readable contrast and touch targets.
+- On narrow screens, use one-column layouts, full-width primary actions, and no horizontal scrolling. Desktop may use two-column forms and dashboard panels.
+
+### Screen-by-screen behavior
+
+#### 1. Landing page
+
+- **Goal:** Explain the product and route couples to account creation and guests to their registry.
+- **Content:** Short product value statement; three-step explanation (make the registry, share it, receive gifts offline); primary **Create your registry** action; secondary **Explore a sample** action; clear note that guests do not need an account and payment is made directly to the couple.
+- **Actions/navigation:** Primary action → account creation. Sign-in → sign-in mode. A guest with a link opens that registry URL; the sample action is prototype-only.
+- **States:** Initial page loads without private data. If sample content fails, show a retry or the explanatory landing content; do not make a failed lookup look like a real registry.
+- **Mobile:** Stack hero and preview card; keep primary action visible without requiring sideways scrolling.
+
+#### 2. Couple registration / login
+
+- **Goal:** Let a couple account owner create an account or let an existing member sign in.
+- **Content:** Clearly distinguish **Create account** and **Sign in**; email and password fields; password visibility control; password guidance; links between the two modes; submit/loading feedback.
+- **Actions/navigation:** Successful registration → create registry for a new owner, or dashboard if an invited collaborator already has a membership. Successful sign-in → dashboard. Authentication errors stay on the form with actionable, non-sensitive copy.
+- **States:** Validate required fields and email format; show submitting state; prevent duplicate submits; show generic invalid-credentials messaging; provide account verification/resend flow if email confirmation is enabled. Never claim authentication succeeded in demo mode.
+- **Mobile:** Single-column form, appropriate email/password keyboards and autocomplete.
+
+#### 3. Create wedding registry
+
+- **Goal:** Create the first registry after account creation.
+- **Content:** Couple names, wedding date, city (if retained), welcome message, and a short explanation of what will be public. Make required and optional fields explicit.
+- **Actions/navigation:** **Create registry** validates and saves; success → dashboard with draft/unpublished status. Back returns to account flow without silently losing entered values.
+- **States:** Inline field validation; saving state; slug collision handled by suggesting another slug; recoverable error preserves entered content. Never publish automatically without a clear, explicit publish action.
+- **Mobile:** Stack fields; date control is touch-friendly; textarea and save action span the available width.
+
+#### 4. Couple dashboard
+
+- **Goal:** Give owner and verified partner collaborator a concise overview and next actions.
+- **Content:** Registry draft/published state; preview/share link; gift count and availability; verified group-gift totals; pending payment reports; recent reservations/activity; partner membership status.
+- **Actions/navigation:** Add/edit gifts → gift form; review reservations/reports → management; preview/share → public view; publish/unpublish and invite collaborator require explicit confirmation where impact is significant.
+- **States:** First-use empty state prompts registry/gift setup. Loading uses a stable skeleton. Errors identify the section and provide retry. Published link is copyable and gives a success confirmation. Show zero verified amount distinctly from “not loaded.”
+- **Mobile:** Stack summary cards; keep the most urgent pending verification visible before long gift lists.
+
+#### 5. Add / edit gift
+
+- **Goal:** Let a verified member create or update an individual or group gift.
+- **Content:** Gift name, description, category, type, price/target, optional external link, and optional gift image. Explain that an individual gift can be reserved once and group target cannot be overfunded.
+- **Actions/navigation:** Save → dashboard/list; cancel/back returns without saving. Delete/archive requires confirmation and explains impact if there are active reservations or contributions.
+- **States:** Validate name, positive INR amount, valid link, image type/size, and required fields. On group target edits, prevent a target below the currently committed/verified total. Save errors preserve values. Image upload has progress and retry; gift actions remain disabled while saving.
+- **Mobile:** Single column; image picker has a large tap target and preview; sticky or clearly visible save action.
+
+#### 6. Public wedding wishlist
+
+- **Goal:** Let guests understand the couple’s wishes and select a gift without signing in.
+- **Content:** Published couple names/date/welcome note, gift cards grouped by category, individual availability, group target and verified progress, and a discreet offline-payment explanation.
+- **Actions/navigation:** Individual gift → detail/reservation. Group gift → contribution form. Copy/share registry link may be offered. Never display reservation guest names, contact information, pending payment reports, or member details.
+- **States:** Loading skeleton; published registry with no gifts has a friendly empty state; unknown/unpublished slug has a not-found/private message; fetch error offers retry. An unavailable individual gift is shown as **Reserved** and cannot be selected. A fully funded group gift is shown as complete and cannot accept pledges.
+- **Mobile:** Single-column cards and category controls; avoid dense filters; show target/progress without relying on color alone.
+
+#### 7. Gift details and individual reservation
+
+- **Goal:** Let a guest reserve one available individual gift and give the couple enough information to recognize them.
+- **Content:** Gift details/price, availability, guest name, one contact method (email or phone), privacy statement, and cancellation terms.
+- **Actions/navigation:** Submit reservation → confirmation with secure guest link. Guest may later cancel their own active reservation through that link. The couple may release it from management.
+- **States:** Validate name/contact; submitting state; atomic conflict returns an **already reserved** message and a link back to wishlist; successful reservation confirms the gift and supplies the private status link. Expired/revoked link reveals no private data.
+- **Mobile:** Keep gift summary visible above a short form; use correct autocomplete/input mode; clearly state that the couple sees name and contact details.
+
+#### 8. Group contribution and offline payment instructions
+
+- **Goal:** Reserve an amount against a group gift, then let the guest pay the couple directly and report it.
+- **Content:** Gift description, target, verified progress, remaining available capacity, amount field, guest name/contact, and the couple’s configured UPI/bank/cash instructions. State plainly that ShaadiLedger does not collect/process payment and does not request proof.
+- **Actions/navigation:** Submit pledge → show pledge amount and 72-hour expiry. **I’ve paid** records a payment report; it does not verify payment. The report leads to a status link. No guest cancellation action is provided.
+- **States:** Amount must be positive and no greater than current remaining capacity. If another pledge consumes capacity concurrently, return updated remaining amount and ask the guest to retry with a valid amount. Full target disables new pledges. Expired unpaid pledge releases capacity. Reported payment awaits couple review and does not expire automatically.
+- **Mobile:** Payment instructions are readable and easy to copy; amount and primary action stay prominent. Never imply that copying or viewing details is a payment.
+
+#### 9. Confirmation and guest status
+
+- **Goal:** Confirm an individual reservation or group-contribution action and later reveal only its status to the guest.
+- **Content:** Gift name, reservation/contribution amount as appropriate, current business status, next step, couple-facing privacy notice, and a link back to the public registry.
+- **Actions/navigation:** Group pledge page offers the next step to mark offline payment as reported. The secure guest link opens only the linked reservation/contribution; rejected payment allows the guest to review instructions and report again. There is no guest cancellation for group contributions.
+- **States:** Distinguish `pledged` (pay within 72 hours), `payment_reported` (awaiting review), `verified`, `rejected` (may report again), `expired`, `reserved`, `cancelled`, and `released`. Expired/revoked/invalid token shows a generic unavailable-link message without exposing whether a guest record exists.
+- **Mobile:** Status and next action appear first; long payment details remain readable and copyable.
+
+#### 10. Reservation and contribution management
+
+- **Goal:** Let owner and verified collaborator manage reservations and decide reported payments.
+- **Content:** Separate reservation and payment-report lists; guest identity/contact visible only here to authorized members; contribution amount, gift, report time, and current status; no proof upload/view control.
+- **Actions/navigation:** Release reservation; verify or reject reported payment; release an unpaid pledge early; update payment instructions; view activity history. Every consequential action asks for confirmation or reason where appropriate and records the acting member.
+- **States:** Empty queues explain that no action is pending. Loading/error states are scoped to each list. Concurrent/repeated decisions show the latest status rather than silently overwriting. Verify updates collected progress; reject frees capacity and lets the guest report again. No automatic expiry for `payment_reported`.
+- **Mobile:** Use compact cards rather than wide tables; keep guest contact details behind an explicit reveal; make verify/reject controls distinct and confirmation-backed.
+
+### End-to-end navigation flows
+
+**New registry owner:** Landing → create account → create registry → dashboard → add gifts → preview → publish/share → management.
+
+**Returning owner/collaborator:** Landing → sign in → dashboard → management or gift editor. A partner receives an invitation and must verify their own account before dashboard access.
+
+**Individual gift guest:** Shared registry link → public wishlist → available gift → enter name/contact → reserve → private confirmation/status link. From the status link the guest may cancel that individual reservation.
+
+**Group gift guest:** Shared registry link → public wishlist → group gift → enter amount/name/contact → pledge (72-hour expiry) → view offline instructions → report payment → private status link → verified or rejected; after rejection the guest may report again.
+
+### Interaction and accessibility requirements
+
+- Persisted business statuses and temporary interface states are separate. `reserved` is not a loading state; “gift no longer available” is a recoverable conflict outcome.
+- Use inline errors next to fields and an error summary or announced message after failed submission. Move focus to the first invalid field or page heading when appropriate.
+- Announce async outcomes (saved, copied, reservation conflict, payment reported) with an accessible live region; do not rely only on color or animation.
+- Disable duplicate submissions while a request is pending, but never treat disabled UI as a substitute for server-side atomic checks.
+- Respect reduced-motion preference. Keep all interactive behavior available without hover.
+- Do not show demo/sample data as if it were the signed-in user’s real registry or real guest activity.
 
 ## Technical architecture
 
@@ -104,7 +221,7 @@ Every screen needs loading, empty, error, and success behavior as appropriate. G
 | Hosting | Vercel | Frontend deployment |
 | Notifications | In-app notices and transactional email | Essential confirmations and updates |
 
-Keep the application a modular React/Supabase monolith. Do not add a separate FastAPI backend, microservices, AI, or payment gateway for Phase 1. Never put the Supabase service-role key in the browser. Enable RLS on every application table; use trusted functions for guest writes, verification, releases, and other privileged operations. Validate all amounts and ownership relationships server-side. Add rate limiting/bot protection to public write operations and audit reservation releases and contribution decisions.
+Keep the application a modular React/Supabase monolith. Do not add a separate FastAPI backend, microservices, AI, or payment gateway for Phase 1. Never put the Supabase service-role key in the browser. Enable RLS on every application table; use trusted functions for guest writes, verification, releases, and other privileged operations. Validate all amounts and ownership relationships server-side. Apply rate limiting to public write operations and audit reservation releases and contribution decisions.
 
 ### Initial data areas
 
@@ -114,22 +231,28 @@ Keep the application a modular React/Supabase monolith. Do not add a separate Fa
 - Registry settings: `payment_settings`.
 - Access and operations: `guest_access_tokens`, `audit_logs`, `notifications`.
 
-Guest/contact data must not be publicly readable. A registry has one creator and may have an invited, verified partner collaborator with registry-management permissions. Public slug is an identifier, not a secret.
+Guest/contact data must not be publicly readable. A registry has one creator and may have an invited, verified partner collaborator with registry-management permissions. Public slug is an identifier, not a secret. The initial migration exposes published registry data through a safe read RPC; public reservation/contribution writes are granted only to the trusted `service_role`, so the frontend must call rate-limited Edge Functions and must never receive the service-role key.
 
 ## Implementation plan
 
 ### 1. UX and screen specification
 
-- [ ] Specify each of the 10 screens, navigation, mobile layout, forms, content, and interface states.
-- [ ] Confirm user flows for owner, collaborator, individual gift guest, and group contribution guest.
+- [x] Draft behavior for all 10 product areas, shared navigation, mobile layouts, forms, content, and interface states.
+- [x] Document owner, collaborator, individual gift guest, and group contribution guest journeys.
 - [ ] Review the screen specification before connecting screens to real data.
 
 ### 2. Project and Supabase foundation
 
 - [x] Set up the React + Vite + Tailwind foundation, hash-based prototype navigation, build command, and `.env.example`.
-- [ ] Configure Supabase project and local development environment without committing secrets.
-- [ ] Define schema, state transitions, indexes, constraints, and access matrix.
-- [ ] Add migrations and RLS policies; test authorized and denied access.
+- [x] Add Supabase CLI project configuration and local Auth/redirect settings without adding credentials.
+- [x] Define the initial schema, business states, indexes, constraints, and access rules.
+- [x] Add the initial SQL migration with RLS policies, atomic guest operations, hashed guest tokens, audit records, and a 72-hour pledge expiry function.
+- [x] Add pgTAP checks for core schema, RLS/grants, and protected guest operations.
+- [x] Apply the updated migration and exercise all 34 database assertions in an isolated PostgreSQL-compatible test environment with Supabase API stubs.
+- [ ] Run the migration and pgTAP suite against local Supabase; requires Docker Desktop or Podman.
+- [x] Schedule stale-pledge expiry every 15 minutes and clean old rate-limit counters daily with `pg_cron`.
+- [x] Add rate-limited Edge Function wrappers for reservation, pledge, cancellation, payment report, and guest-status operations.
+- [ ] Run the migration and Edge Functions against local Supabase; requires Docker Desktop or Podman.
 
 ### 3. Authentication, membership, and registry
 
@@ -169,7 +292,7 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 
 ## Current implementation status
 
-The React/Vite/Tailwind project foundation and a navigable, mobile-first visual prototype for the 10-screen inventory are in place. It uses static sample content only; sign-in, saving, reservations, contributions, and verification are not connected. Next: review the screen flows, then implement the Supabase schema and access policies before connecting real actions.
+The React/Vite/Tailwind foundation, navigable mobile-first prototype, Supabase local configuration, initial schema/RLS migration, pgTAP checks, guest Edge Function wrappers, database-backed IP rate limiting, and `pg_cron` jobs are in place. The updated migration and all 34 assertions passed in an isolated PostgreSQL-compatible environment with Supabase API stubs; the rate limiter's allow/deny threshold and scheduled job records were also checked. This does not substitute for validation against actual Supabase. Docker Desktop/Podman is unavailable here, so the local Supabase stack and Edge Functions could not be started. The UX specification remains a review draft. The prototype still uses static sample content; Supabase is not linked, and authentication or real registry actions are not connected.
 
 ## Run and test locally
 
@@ -180,6 +303,16 @@ npm install
 npm run dev
 npm test
 npm run build
+npx deno test --allow-env supabase/functions/tests/public_api.deno.ts
+npx supabase start
+npx supabase test db
+npx supabase functions serve --env-file supabase/functions/.env.local
 ```
 
-The Vitest/Testing Library suite checks all 10 screen routes, account-to-registry navigation, the individual reservation and group contribution guest journeys, and access to couple gift management. The UI tests cover prototype navigation only; they do not substitute for database, authorization, concurrency, or end-to-end tests once Supabase is connected.
+The Vitest/Testing Library suite checks all 10 screen routes, account-to-registry navigation, the individual reservation and group contribution guest journeys, and access to couple gift management. The Deno test covers CORS, request validation, database-backed throttling, and fail-closed behavior. These tests do not substitute for database, authorization, concurrency, or end-to-end tests once Supabase is connected.
+
+The Supabase migration and database assertions are in `supabase/migrations/` and `supabase/tests/database/`. Run them with the Supabase CLI after installing Docker Desktop or Podman. Do not configure the service-role key in the Vite frontend.
+
+For local Edge Function testing, copy `supabase/functions/.env.example` to `supabase/functions/.env.local`, generate a unique `RATE_LIMIT_HMAC_SECRET` of at least 32 bytes, and set `ALLOWED_ORIGINS` to the exact frontend origin(s). The local Supabase Edge Runtime provides `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`; never expose the service-role key to the browser. Set `RATE_LIMIT_HMAC_SECRET` and `ALLOWED_ORIGINS` as Supabase function secrets before deployment. Guest endpoint limits are 10 requests/minute per IP for writes and 30/minute for status lookups; limiter failures fail closed. Status tokens are sent in POST bodies, not URLs.
+
+Guest Edge Functions accept JSON `POST` requests: `create-reservation` (`giftId`, `guestName`, and exactly one of `email`/`phone`), `create-group-pledge` (the same fields plus numeric `amount`), `cancel-reservation` (`token`), `report-payment` (`token`), and `guest-activity` (`token`). Guest status is available only through the rate-limited function, not direct anonymous RPC access.
