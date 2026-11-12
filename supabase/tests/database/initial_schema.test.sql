@@ -1,6 +1,6 @@
 begin;
 
-select plan(34);
+select plan(35);
 
 select ok(
   (select count(*) = 13
@@ -8,6 +8,17 @@ select ok(
    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
    where n.nspname = 'public' and c.relkind = 'r'),
   'all 13 Phase 1 tables exist'
+);
+
+select ok(
+  not exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'gifts'
+      and column_name = 'gift_type'
+  ),
+  'guests choose the gifting method; gifts have no fixed type'
 );
 
 select ok(

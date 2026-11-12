@@ -66,7 +66,6 @@ create table public.gifts (
   id uuid primary key default gen_random_uuid(),
   registry_id uuid not null references public.registries (id) on delete cascade,
   category_id uuid,
-  gift_type text not null check (gift_type in ('individual', 'group')),
   name text not null check (char_length(btrim(name)) between 1 and 160),
   description text not null default '' check (char_length(description) <= 2000),
   target_amount numeric(12, 2) not null check (target_amount > 0),
@@ -279,14 +278,7 @@ as $$
 declare
   v_committed numeric(12, 2);
 begin
-  if new.gift_type <> old.gift_type and (
-    exists (select 1 from public.reservations r where r.gift_id = old.id)
-    or exists (select 1 from public.contributions c where c.gift_id = old.id)
-  ) then
-    raise exception using errcode = '23514', message = 'gift type cannot change after guest activity';
-  end if;
-
-  if new.gift_type = 'group' and new.target_amount <> old.target_amount then
+  if new.target_amount <> old.target_amount then
     select coalesce(sum(c.amount), 0) into v_committed
     from public.contributions c
     where c.gift_id = old.id
@@ -295,8 +287,15 @@ begin
         or (c.status = 'pledged' and c.expires_at > pg_catalog.now())
       );
 
+    if exists (
+      select 1 from public.reservations r
+      where r.gift_id = old.id and r.status = 'reserved'
+    ) then
+      v_committed := old.target_amount;
+    end if;
+
     if new.target_amount < v_committed then
-      raise exception using errcode = '23514', message = 'group gift target cannot be below committed contributions';
+      raise exception using errcode = '23514', message = 'gift value cannot be below an active reservation or committed contributions';
     end if;
   end if;
 
@@ -467,7 +466,6 @@ as $$
       select pg_catalog.jsonb_agg(
         pg_catalog.jsonb_build_object(
           'id', g.id,
-          'gift_type', g.gift_type,
           'name', g.name,
           'description', g.description,
           'target_amount', g.target_amount,
@@ -482,16 +480,12 @@ as $$
             from public.gift_images gi
             where gi.registry_id = g.registry_id and gi.gift_id = g.id
           ), '[]'::jsonb),
-          'verified_amount', case
-            when g.gift_type = 'group' then coalesce((
+          'verified_amount', coalesce((
               select pg_catalog.sum(c.amount)
               from public.contributions c
               where c.gift_id = g.id and c.status = 'verified'
-            ), 0)
-            else 0
-          end,
-          'committed_amount', case
-            when g.gift_type = 'group' then coalesce((
+            ), 0),
+          'committed_amount', coalesce((
               select pg_catalog.sum(c.amount)
               from public.contributions c
               where c.gift_id = g.id
@@ -499,16 +493,11 @@ as $$
                   c.status in ('verified', 'payment_reported')
                   or (c.status = 'pledged' and c.expires_at > pg_catalog.now())
                 )
-            ), 0)
-            else 0
-          end,
-          'is_reserved', case
-            when g.gift_type = 'individual' then exists (
+            ), 0),
+          'is_reserved', exists (
               select 1 from public.reservations rs
               where rs.gift_id = g.id and rs.status = 'reserved'
             )
-            else false
-          end
         )
         order by g.sort_order, g.created_at
       )
@@ -569,11 +558,24 @@ begin
   select g.* into v_gift
   from public.gifts g
   join public.registries r on r.id = g.registry_id
-  where g.id = p_gift_id and g.gift_type = 'individual'
-    and g.is_active and r.is_published
+  where g.id = p_gift_id and g.is_active and r.is_published
   for update of g;
 
   if not found then
+    raise exception using errcode = 'P0002', message = 'gift is unavailable';
+  end if;
+
+  if exists (
+    select 1 from public.reservations rs
+    where rs.gift_id = v_gift.id and rs.status = 'reserved'
+  ) or exists (
+    select 1 from public.contributions c
+    where c.gift_id = v_gift.id
+      and (
+        c.status in ('verified', 'payment_reported')
+        or (c.status = 'pledged' and c.expires_at > pg_catalog.now())
+      )
+  ) then
     raise exception using errcode = 'P0002', message = 'gift is unavailable';
   end if;
 
@@ -647,12 +649,18 @@ begin
   select g.* into v_gift
   from public.gifts g
   join public.registries r on r.id = g.registry_id
-  where g.id = p_gift_id and g.gift_type = 'group'
-    and g.is_active and r.is_published
+  where g.id = p_gift_id and g.is_active and r.is_published
   for update of g;
 
   if not found then
-    raise exception using errcode = 'P0002', message = 'group gift is unavailable';
+    raise exception using errcode = 'P0002', message = 'gift is unavailable';
+  end if;
+
+  if exists (
+    select 1 from public.reservations rs
+    where rs.gift_id = v_gift.id and rs.status = 'reserved'
+  ) then
+    raise exception using errcode = 'P0002', message = 'gift is unavailable';
   end if;
 
   select coalesce(sum(c.amount), 0) into v_committed

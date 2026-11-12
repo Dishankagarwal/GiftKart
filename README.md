@@ -1,6 +1,6 @@
 # ShaadiLedger
 
-ShaadiLedger is a personalized wedding gift registry. It helps couples publish a wishlist and lets guests reserve gifts or contribute toward group gifts using offline payments.
+ShaadiLedger is a personalized wedding gift registry. Couples publish a wishlist of gifts with values; guests decide whether to reserve a gift in full or contribute any amount toward it, then pay the couple directly offline.
 
 > Product principle: Make gifting effortless for guests and gift management effortless for couples.
 
@@ -11,9 +11,10 @@ ShaadiLedger is a personalized wedding gift registry. It helps couples publish a
 - Couple account and one registry for the couple.
 - Registry owner can invite one partner as a collaborator. Both verified members can manage the registry.
 - Wedding names/date, welcome message, unique public link, publish/unpublish, and share.
-- Gifts with categories, prices or targets, images, external links, and individual/group types.
-- Individual gifts can be reserved by one guest at a time. Guest can cancel their own reservation; a couple member can release it.
-- Guests contribute to group gifts through offline UPI, bank transfer, or cash instructions. No payment gateway or proof upload.
+- Gifts with categories, values, optional product links, and priority order; a store favicon is derived from the product link for the gift thumbnail.
+- On the public wishlist, guests choose whether to reserve the full gift or contribute an amount. The first active choice determines availability: a reservation blocks contributions, while contributions block a full reservation and allow more contributions up to the gift value.
+- A guest can cancel their own reservation; a couple member can release it.
+- Guests pay the couple directly using offline UPI, bank transfer, or cash instructions. No payment gateway or proof upload.
 - Guests report that a payment was made. A registry member verifies or rejects the report.
 - Guests can securely check their contribution status without creating an account.
 - Essential confirmations and updates through in-app dashboard notices and email. WhatsApp sharing is supported; WhatsApp notifications are not in Phase 1.
@@ -39,22 +40,23 @@ ShaadiLedger is a personalized wedding gift registry. It helps couples publish a
 ### Guest
 
 1. Opens a published registry without signing in.
-2. Reserves an available individual gift or pledges an amount toward a group gift.
+2. Chooses to reserve a gift in full or contribute an amount toward it.
 3. Pays the couple offline using the displayed instructions.
 4. Reports the payment and receives a secure link to check the contribution status.
 
 ## Product and business rules
 
-### Individual reservations
+### Full-gift reservations
 
 - A gift can have at most one active reservation. PostgreSQL must enforce this atomically; frontend availability checks are not sufficient.
+- A reserved gift cannot accept contributions. Once a contribution is active, payment-reported, or verified, the gift cannot be reserved in full; additional contributions may use its remaining capacity.
 - Guests can cancel only their own reservation. Registry members can release a reservation.
 - A cancelled or released reservation makes the gift available again.
 - Reservation identity and contact information are visible only to authorized registry members and the guest through a secure confirmation link.
 
-### Group contributions
+### Contributions
 
-- **Overfunding is disabled.** Available capacity is the gift target minus verified contributions, active pledges, and payment-reported contributions.
+- **Overfunding is disabled.** Available capacity is the gift value minus verified contributions, active pledges, and payment-reported contributions.
 - Creating a pledge reserves capacity. The amount must be positive, valid, and within remaining capacity; allocation must be atomic under concurrent requests.
 - An unpaid pledge expires after 72 hours and releases its reserved capacity. A registry member may release a pledge earlier. Guests cannot cancel pledges.
 - Once payment is reported, the contribution does not expire automatically and continues to count against capacity until verified or rejected.
@@ -83,10 +85,10 @@ Business statuses (such as `reserved`, `pledged`, `payment_reported`, `verified`
 | 2 | Couple registration / login | Couple | Create an account or sign in. |
 | 3 | Create wedding registry | Couple | Enter names, wedding date, welcome message, and initial settings. |
 | 4 | Couple dashboard | Couple | See registry status, gifts, reservations, contributions, and notifications. |
-| 5 | Add / edit gift | Couple | Manage individual or group gifts, images, categories, links, and target amounts. |
-| 6 | Public wedding wishlist | Guest | Browse published gifts and their availability/progress. |
-| 7 | Gift details and reservation | Guest | Reserve an individual gift with name and one contact method. |
-| 8 | Group contribution and payment instructions | Guest | Pledge an amount, view offline instructions, and report payment. |
+| 5 | Add / edit gift | Couple | Manage gifts, images, categories, links, and values. |
+| 6 | Public wedding wishlist | Guest | Browse gifts, choose full reservation or contribution, and see availability/progress. |
+| 7 | Gift details and reservation | Guest | Reserve a gift in full with name and one contact method. |
+| 8 | Contribution and payment instructions | Guest | Contribute an amount, view offline instructions, and report payment. |
 | 9 | Contribution confirmation and status | Guest | Confirm submission and securely check reservation/contribution status. |
 | 10 | Reservation and contribution management | Couple | Release reservations and review, verify, or reject reports. |
 
@@ -94,7 +96,7 @@ The inventory has 10 product areas. Account access is one area with two modes (s
 
 ## UX specification — review draft
 
-This specification describes the intended Phase 1 behavior for the 10 product areas. It is the basis for wireframe review; it does not mean the screens or backend are fully implemented. The current UI is a static prototype with sample content.
+This specification describes the intended Phase 1 behavior for the 10 product areas. It is the basis for wireframe review; it does not mean the screens or backend are fully implemented. The current UI is a browser-local demo and is not connected to Supabase.
 
 ### Global navigation and layout
 
@@ -137,46 +139,46 @@ This specification describes the intended Phase 1 behavior for the 10 product ar
 #### 4. Couple dashboard
 
 - **Goal:** Give owner and verified partner collaborator a concise overview and next actions.
-- **Content:** Registry draft/published state; preview/share link; gift count and availability; verified group-gift totals; pending payment reports; recent reservations/activity; partner membership status.
+- **Content:** Registry draft/published state; preview/share link; gift count and availability; verified contribution totals; pending payment reports; recent reservations/activity; partner membership status.
 - **Actions/navigation:** Add/edit gifts → gift form; review reservations/reports → management; preview/share → public view; publish/unpublish and invite collaborator require explicit confirmation where impact is significant.
 - **States:** First-use empty state prompts registry/gift setup. Loading uses a stable skeleton. Errors identify the section and provide retry. Published link is copyable and gives a success confirmation. Show zero verified amount distinctly from “not loaded.”
 - **Mobile:** Stack summary cards; keep the most urgent pending verification visible before long gift lists.
 
 #### 5. Add / edit gift
 
-- **Goal:** Let a verified member create or update an individual or group gift.
-- **Content:** Gift name, description, category, type, price/target, optional external link, and optional gift image. Explain that an individual gift can be reserved once and group target cannot be overfunded.
+- **Goal:** Let a verified member create or update a gift.
+- **Content:** Gift name, description, category, value, wishlist priority, and optional product link. The couple does not choose the guest's giving method.
 - **Actions/navigation:** Save → dashboard/list; cancel/back returns without saving. Delete/archive requires confirmation and explains impact if there are active reservations or contributions.
-- **States:** Validate name, positive INR amount, valid link, image type/size, and required fields. On group target edits, prevent a target below the currently committed/verified total. Save errors preserve values. Image upload has progress and retry; gift actions remain disabled while saving.
-- **Mobile:** Single column; image picker has a large tap target and preview; sticky or clearly visible save action.
+- **States:** Validate name, positive INR value, HTTP(S) product URLs, and valid priority. If a store favicon is unavailable, show a gift-name monogram; gift actions remain disabled while saving.
+- **Mobile:** Single column; product URL field is easy to paste into; sticky or clearly visible save action.
 
 #### 6. Public wedding wishlist
 
 - **Goal:** Let guests understand the couple’s wishes and select a gift without signing in.
-- **Content:** Published couple names/date/welcome note, gift cards grouped by category, individual availability, group target and verified progress, and a discreet offline-payment explanation.
-- **Actions/navigation:** Individual gift → detail/reservation. Group gift → contribution form. Copy/share registry link may be offered. Never display reservation guest names, contact information, pending payment reports, or member details.
-- **States:** Loading skeleton; published registry with no gifts has a friendly empty state; unknown/unpublished slug has a not-found/private message; fetch error offers retry. An unavailable individual gift is shown as **Reserved** and cannot be selected. A fully funded group gift is shown as complete and cannot accept pledges.
+- **Content:** Published couple names/date/welcome note, gift cards grouped by category, full-reservation availability, contribution capacity and verified progress, and a discreet offline-payment explanation.
+- **Actions/navigation:** Gift → guest's choice of full reservation or contribution. Copy/share registry link may be offered. Never display reservation guest names, contact information, pending payment reports, or member details.
+- **States:** Loading skeleton; published registry with no gifts has a friendly empty state; unknown/unpublished slug has a not-found/private message; fetch error offers retry. A reserved gift cannot be contributed toward. Once contributions start, guests may continue contributing within capacity but cannot reserve the full gift. A fully funded gift is shown as complete.
 - **Mobile:** Single-column cards and category controls; avoid dense filters; show target/progress without relying on color alone.
 
-#### 7. Gift details and individual reservation
+#### 7. Full gift reservation
 
-- **Goal:** Let a guest reserve one available individual gift and give the couple enough information to recognize them.
-- **Content:** Gift details/price, availability, guest name, one contact method (email or phone), privacy statement, and cancellation terms.
+- **Goal:** Let a guest reserve one available gift in full and give the couple enough information to recognize them.
+- **Content:** Gift details/price, optional product link, availability, guest name, one contact method (email or phone), and privacy statement.
 - **Actions/navigation:** Submit reservation → confirmation with secure guest link. Guest may later cancel their own active reservation through that link. The couple may release it from management.
 - **States:** Validate name/contact; submitting state; atomic conflict returns an **already reserved** message and a link back to wishlist; successful reservation confirms the gift and supplies the private status link. Expired/revoked link reveals no private data.
 - **Mobile:** Keep gift summary visible above a short form; use correct autocomplete/input mode; clearly state that the couple sees name and contact details.
 
-#### 8. Group contribution and offline payment instructions
+#### 8. Contribution and offline payment instructions
 
-- **Goal:** Reserve an amount against a group gift, then let the guest pay the couple directly and report it.
-- **Content:** Gift description, target, verified progress, remaining available capacity, amount field, guest name/contact, and the couple’s configured UPI/bank/cash instructions. State plainly that ShaadiLedger does not collect/process payment and does not request proof.
+- **Goal:** Reserve an amount against a gift, then let the guest pay the couple directly and report it.
+- **Content:** Gift description, optional product link, target, verified progress, remaining available capacity, amount field, guest name/contact, and the couple’s configured UPI/bank/cash instructions. State plainly that ShaadiLedger does not collect/process payment and does not request proof.
 - **Actions/navigation:** Submit pledge → show pledge amount and 72-hour expiry. **I’ve paid** records a payment report; it does not verify payment. The report leads to a status link. No guest cancellation action is provided.
 - **States:** Amount must be positive and no greater than current remaining capacity. If another pledge consumes capacity concurrently, return updated remaining amount and ask the guest to retry with a valid amount. Full target disables new pledges. Expired unpaid pledge releases capacity. Reported payment awaits couple review and does not expire automatically.
 - **Mobile:** Payment instructions are readable and easy to copy; amount and primary action stay prominent. Never imply that copying or viewing details is a payment.
 
 #### 9. Confirmation and guest status
 
-- **Goal:** Confirm an individual reservation or group-contribution action and later reveal only its status to the guest.
+- **Goal:** Confirm a reservation or contribution and later reveal only its status to the guest.
 - **Content:** Gift name, reservation/contribution amount as appropriate, current business status, next step, couple-facing privacy notice, and a link back to the public registry.
 - **Actions/navigation:** Group pledge page offers the next step to mark offline payment as reported. The secure guest link opens only the linked reservation/contribution; rejected payment allows the guest to review instructions and report again. There is no guest cancellation for group contributions.
 - **States:** Distinguish `pledged` (pay within 72 hours), `payment_reported` (awaiting review), `verified`, `rejected` (may report again), `expired`, `reserved`, `cancelled`, and `released`. Expired/revoked/invalid token shows a generic unavailable-link message without exposing whether a guest record exists.
@@ -196,9 +198,9 @@ This specification describes the intended Phase 1 behavior for the 10 product ar
 
 **Returning owner/collaborator:** Landing → sign in → dashboard → management or gift editor. A partner receives an invitation and must verify their own account before dashboard access.
 
-**Individual gift guest:** Shared registry link → public wishlist → available gift → enter name/contact → reserve → private confirmation/status link. From the status link the guest may cancel that individual reservation.
+**Full gift reservation:** Shared registry link → public wishlist → available gift → choose full reservation → enter name/contact → reserve → private confirmation/status link. From the status link the guest may cancel that reservation.
 
-**Group gift guest:** Shared registry link → public wishlist → group gift → enter amount/name/contact → pledge (72-hour expiry) → view offline instructions → report payment → private status link → verified or rejected; after rejection the guest may report again.
+**Contribution:** Shared registry link → public wishlist → available gift → choose contribution → enter amount/name/contact → pledge (72-hour expiry) → view offline instructions → report payment → private status link → verified or rejected; after rejection the guest may report again.
 
 ### Interaction and accessibility requirements
 
@@ -238,32 +240,33 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 ### 1. UX and screen specification
 
 - [x] Draft behavior for all 10 product areas, shared navigation, mobile layouts, forms, content, and interface states.
-- [x] Document owner, collaborator, individual gift guest, and group contribution guest journeys.
+- [x] Document owner, collaborator, full gift reservation, and guest contribution journeys.
 - [ ] Review the screen specification before connecting screens to real data.
 
 ### 2. Project and Supabase foundation
 
 - [x] Set up the React + Vite + Tailwind foundation, hash-based prototype navigation, build command, and `.env.example`.
+- [x] Implement browser-local demo flows for account sign-up/sign-in, registry creation, gift creation, guest reservation/contribution choices, and copying the registry link.
 - [x] Add Supabase CLI project configuration and local Auth/redirect settings without adding credentials.
 - [x] Define the initial schema, business states, indexes, constraints, and access rules.
 - [x] Add the initial SQL migration with RLS policies, atomic guest operations, hashed guest tokens, audit records, and a 72-hour pledge expiry function.
 - [x] Add pgTAP checks for core schema, RLS/grants, and protected guest operations.
-- [x] Apply the updated migration and exercise all 34 database assertions in an isolated PostgreSQL-compatible test environment with Supabase API stubs.
+- [ ] Re-run the updated migration and 35 database assertions in an isolated PostgreSQL-compatible test environment with Supabase API stubs.
 - [ ] Run the migration and pgTAP suite against local Supabase; requires Docker Desktop or Podman.
 - [x] Schedule stale-pledge expiry every 15 minutes and clean old rate-limit counters daily with `pg_cron`.
 - [x] Add rate-limited Edge Function wrappers for reservation, pledge, cancellation, payment report, and guest-status operations.
 - [ ] Run the migration and Edge Functions against local Supabase; requires Docker Desktop or Podman.
 
-### 3. Authentication, membership, and registry
+### 3. Supabase authentication, membership, and registry
 
-- [ ] Implement couple registration/login and owner membership.
+- [ ] Replace browser-local demo accounts with Supabase Auth and owner membership.
 - [ ] Implement partner invitation and verified collaborator access.
 - [ ] Implement registry create/edit/publish and unique public slug.
 - [ ] Implement gift/category/image management and public wishlist.
 
-### 4. Reservations and group gifting
+### 4. Reservations and contributions
 
-- [ ] Add atomic individual reservation, guest cancellation, and member release.
+- [ ] Enforce atomic exclusive reservation vs contribution mode and guest cancellation/member release.
 - [ ] Add atomic contribution capacity allocation using verified + active pledges + payment-reported totals.
 - [ ] Add 72-hour unpaid-pledge expiry and member-controlled early release.
 - [ ] Add offline payment reporting, member verification/rejection, and rejected-payment resubmission with audit history.
@@ -280,7 +283,8 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 
 ## Acceptance criteria
 
-- Exactly one concurrent guest can reserve an individual gift.
+- Exactly one concurrent guest can reserve a gift, and a reserved gift cannot also accept contributions.
+- After contributions begin, the gift cannot be reserved in full; more contributions can be made only within the uncommitted value.
 - Guests can cancel their own reservation; authorized registry members can release reservations.
 - Group pledges cannot exceed target capacity when counting verified, active-pledged, and payment-reported amounts, including concurrent submissions.
 - Unpaid pledges expire after 72 hours and release capacity; payment-reported contributions do not expire automatically.
@@ -292,7 +296,7 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 
 ## Current implementation status
 
-The React/Vite/Tailwind foundation, navigable mobile-first prototype, Supabase local configuration, initial schema/RLS migration, pgTAP checks, guest Edge Function wrappers, database-backed IP rate limiting, and `pg_cron` jobs are in place. The updated migration and all 34 assertions passed in an isolated PostgreSQL-compatible environment with Supabase API stubs; the rate limiter's allow/deny threshold and scheduled job records were also checked. This does not substitute for validation against actual Supabase. Docker Desktop/Podman is unavailable here, so the local Supabase stack and Edge Functions could not be started. The UX specification remains a review draft. The prototype still uses static sample content; Supabase is not linked, and authentication or real registry actions are not connected.
+The prototype now supports browser-local demo sign-up/sign-in, registry creation with the entered couple details, gift creation/editing without a gift-type selector, guest choice to reserve or contribute, activity summaries, and registry-link copying. Couples can set or reorder wishlist priority, and guests can open the linked product from the wishlist or action form. Gift thumbnails use the product site's favicon (or a name monogram if unavailable); retailer product-photo extraction is not part of this browser-only demo. Reservation asks for one valid email-or-phone field to avoid the prior conflicting two-field submission. Demo accounts and data are saved only in the current browser and are not real authentication or a shared database; the app is not connected to Supabase, so a copied link can show the registry only when its data is available in that browser. A localhost link cannot be opened from another device. The Supabase schema/RLS migration, pgTAP checks, guest Edge Function wrappers, rate limiting, and `pg_cron` jobs are also in place. The updated database migration still needs a fresh isolated validation after the guest-choice data-model change, and actual Supabase validation requires Docker Desktop or Podman, which is unavailable here.
 
 ## Run and test locally
 
@@ -309,7 +313,7 @@ npx supabase test db
 npx supabase functions serve --env-file supabase/functions/.env.local
 ```
 
-The Vitest/Testing Library suite checks all 10 screen routes, account-to-registry navigation, the individual reservation and group contribution guest journeys, and access to couple gift management. The Deno test covers CORS, request validation, database-backed throttling, and fail-closed behavior. These tests do not substitute for database, authorization, concurrency, or end-to-end tests once Supabase is connected.
+The Vitest/Testing Library suite checks the screens, browser-local registration/sign-in, registry details, gift creation, guest reservation/contribution choices, activity, and link copying. The Deno test covers CORS, request validation, database-backed throttling, and fail-closed behavior. These tests do not substitute for database, authorization, concurrency, or end-to-end tests once Supabase is connected.
 
 The Supabase migration and database assertions are in `supabase/migrations/` and `supabase/tests/database/`. Run them with the Supabase CLI after installing Docker Desktop or Podman. Do not configure the service-role key in the Vite frontend.
 

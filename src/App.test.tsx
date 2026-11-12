@@ -7,7 +7,7 @@ const screens = [
   ["login", "Couple sign in", /Your registry awaits/i],
   ["create-account", "Couple registration", /Create your account/i],
   ["create-registry", "Create registry", /Let's make it yours/i],
-  ["dashboard", "Couple dashboard", /Aarav.*Priya/i],
+  ["dashboard", "Couple dashboard", /Your registry is waiting/i],
   ["edit-gift", "Add / edit gift", /Add a little wish/i],
   ["public-registry", "Public wishlist", /Aarav.*Priya/i],
   ["reserve-gift", "Reserve a gift", /A thoughtful choice/i],
@@ -18,24 +18,65 @@ const screens = [
 
 beforeEach(() => {
   window.history.replaceState(null, "", window.location.pathname);
+  window.localStorage.clear();
   vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
+  let uuid = 0;
+  vi.stubGlobal("crypto", {
+    randomUUID: () => `test-uuid-${++uuid}`,
+    getRandomValues: (value: Uint8Array) => {
+      value.fill(7);
+      return value;
+    },
+    subtle: {
+      importKey: vi.fn().mockResolvedValue({}),
+      deriveBits: vi.fn().mockResolvedValue(new ArrayBuffer(32)),
+    },
+  });
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
-describe("ShaadiLedger screen prototype", () => {
-  it("shows the landing page by default", () => {
+async function createRegistry({
+  firstName = "Maya",
+  partnerName = "Neel",
+  email = "maya@example.com",
+  password = "wedding-password",
+}: {
+  firstName?: string;
+  partnerName?: string;
+  email?: string;
+  password?: string;
+} = {}) {
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: /Create your registry/i }));
+  fireEvent.change(screen.getByLabelText("Email address"), { target: { value: email } });
+  fireEvent.change(screen.getByLabelText("Password"), { target: { value: password } });
+  fireEvent.click(screen.getByRole("button", { name: /Continue to registry details/i }));
+
+  const firstNameField = await screen.findByLabelText("Your name");
+  fireEvent.change(firstNameField, { target: { value: firstName } });
+  fireEvent.change(screen.getByLabelText("Your partner's name"), { target: { value: partnerName } });
+  fireEvent.change(screen.getByLabelText("Wedding date"), { target: { value: "2027-09-12" } });
+  fireEvent.change(screen.getByLabelText("City"), { target: { value: "Pune" } });
+  fireEvent.change(screen.getByLabelText(/A welcome note/i), { target: { value: "We cannot wait to celebrate with you." } });
+  fireEvent.click(screen.getByRole("button", { name: /Save registry and continue/i }));
+  await screen.findByRole("heading", { name: new RegExp(`${firstName}.*${partnerName}`) });
+}
+
+describe("ShaadiLedger registry flows", () => {
+  it("shows a clear preview notice on the landing page", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: /Gifts that feel/i })).toBeTruthy();
-    expect(screen.getByText(/Demo only — changes are not saved/)).toBeTruthy();
+    expect(screen.getByText(/Changes are saved only in this browser/i)).toBeTruthy();
   });
 
   it.each(screens)("navigates to the %s screen", (route, label, heading) => {
     render(<App />);
-
     fireEvent.click(screen.getByText("Explore prototype screens"));
     if (route === "login") {
       fireEvent.click(within(screen.getByRole("navigation", { name: "Main navigation" })).getByRole("button", { name: label }));
@@ -47,58 +88,208 @@ describe("ShaadiLedger screen prototype", () => {
     expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
   });
 
-  it("supports the couple account creation path into registry setup", () => {
-    render(<App />);
+  it("creates and saves a registry using the names and details entered", async () => {
+    await createRegistry({ firstName: "Riya", partnerName: "Kabir" });
 
-    fireEvent.click(screen.getByRole("button", { name: /Create your registry/i }));
-    expect(screen.getByRole("heading", { name: /Create your account/i })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /Continue to registry details/i }));
-
-    expect(window.location.hash).toBe("#create-registry");
-    expect(screen.getByRole("heading", { name: /Let's make it yours/i })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /Riya.*Kabir/i })).toBeTruthy();
+    expect(screen.getByText(/12 September 2027.*Pune/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Your dashboard" })).toBeTruthy();
+    expect(JSON.parse(window.localStorage.getItem("shaadiledger.demo.v1") ?? "{}").registries[0].firstName).toBe("Riya");
   });
 
-  it("keeps the shared header visible while navigating between screens", () => {
-    render(<App />);
+  it("adds a gift without asking the couple to choose reservation or contribution type", async () => {
+    await createRegistry();
+    fireEvent.click(screen.getByRole("button", { name: /Add a gift/i }));
+    expect(screen.getByRole("heading", { name: /Add a little wish/i })).toBeTruthy();
+    expect(screen.queryByLabelText(/Gift type/i)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /Start your registry/i }));
+    fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: "A garden table" } });
+    fireEvent.change(screen.getByLabelText("What makes it special? (optional)"), { target: { value: "For long dinners" } });
+    fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "12500" } });
+    fireEvent.change(screen.getByLabelText("Category"), { target: { value: "For our home" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
 
-    expect(screen.getByRole("banner")).toBeTruthy();
-    expect(within(screen.getByRole("navigation", { name: "Main navigation" })).getByRole("button", { name: /Couple sign in/i })).toBeTruthy();
+    expect(await screen.findByText("A garden table")).toBeTruthy();
+    expect(screen.getByText("₹12,500")).toBeTruthy();
+    expect(JSON.parse(window.localStorage.getItem("shaadiledger.demo.v1") ?? "{}").registries[0].gifts).toHaveLength(1);
   });
 
-  it("takes an individual gift guest through reservation confirmation", () => {
-    render(<App />);
+  it("uses the product site's icon and gift priority in the dashboard and public wishlist", async () => {
+    await createRegistry();
+    const addGift = (name: string, priority: string, link = "") => {
+      fireEvent.click(screen.getByRole("button", { name: /Add a gift/i }));
+      fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: name } });
+      fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "5000" } });
+      fireEvent.change(screen.getByLabelText("Wishlist priority"), { target: { value: priority } });
+      if (link) fireEvent.change(screen.getByLabelText("Product link (optional)"), { target: { value: link } });
+      fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
+    };
 
+    addGift("Second choice", "1");
+    addGift("Top choice", "1", "https://shop.example.test/top-choice");
+    const savedGifts = JSON.parse(window.localStorage.getItem("shaadiledger.demo.v1") ?? "{}").registries[0].gifts;
+    expect(savedGifts.map((gift: { name: string; priority: number }) => [gift.name, gift.priority])).toEqual([
+      ["Top choice", 1],
+      ["Second choice", 2],
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: /Preview registry/i }));
+    expect(screen.getByRole("img", { name: "Top choice" }).getAttribute("src")).toBe("https://shop.example.test/favicon.ico");
+    expect(screen.getByRole("link", { name: /View gift online/i }).getAttribute("href")).toBe("https://shop.example.test/top-choice");
+    const firstGift = screen.getByRole("heading", { name: "Top choice" });
+    const secondGift = screen.getByRole("heading", { name: "Second choice" });
+    expect(firstGift.compareDocumentPosition(secondGift) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Reserve this gift/i }));
+    expect(screen.getByRole("link", { name: /View gift online/i }).getAttribute("href")).toBe("https://shop.example.test/top-choice");
+    expect(screen.getByRole("link", { name: /Back to the couple's wishlist/i })).toBeTruthy();
+  });
+
+  it("lets a couple edit an existing gift's product URL", async () => {
+    await createRegistry();
+    fireEvent.click(screen.getByRole("button", { name: /Add a gift/i }));
+    fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: "A lamp" } });
+    fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "4000" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("heading", { name: /Edit your wish/i })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Product link (optional)"), { target: { value: "https://shop.example.test/lamp" } });
+    fireEvent.click(screen.getByRole("button", { name: /Save gift changes/i }));
+
+    const savedGift = JSON.parse(window.localStorage.getItem("shaadiledger.demo.v1") ?? "{}").registries[0].gifts[0];
+    expect(savedGift.name).toBe("A lamp");
+    expect(savedGift.link).toBe("https://shop.example.test/lamp");
+    expect(JSON.parse(window.localStorage.getItem("shaadiledger.demo.v1") ?? "{}").registries[0].gifts).toHaveLength(1);
+  });
+
+  it("lets a guest choose reservation or contribution on the public gift", async () => {
+    await createRegistry();
+    fireEvent.click(screen.getByRole("button", { name: /Add a gift/i }));
+    fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: "Our first sofa" } });
+    fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "25000" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Preview registry/i }));
+
+    expect(screen.getByRole("button", { name: /Reserve this gift/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Contribute any amount/i })).toBeTruthy();
+  });
+
+  it("does not allow contributions after a guest reserves the full gift", async () => {
+    await createRegistry();
+    fireEvent.click(screen.getByRole("button", { name: /Add a gift/i }));
+    fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: "A garden table" } });
+    fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "12500" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Preview registry/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Reserve this gift/i }));
+    fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Rohan" } });
+    fireEvent.change(screen.getByLabelText("Email or phone number"), { target: { value: "9876543210" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reserve this gift" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to their registry" }));
+
+    expect(screen.getByRole("button", { name: "Reserved" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Already reserved" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("allows additional contributions but not a full reservation after contributions begin", async () => {
+    await createRegistry();
+    fireEvent.click(screen.getByRole("button", { name: /Add a gift/i }));
+    fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: "A garden table" } });
+    fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "12500" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Preview registry/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Contribute any amount/i }));
+    fireEvent.change(screen.getByLabelText("Your contribution amount"), { target: { value: "2500" } });
+    fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Meera" } });
+    fireEvent.change(screen.getByLabelText("Email or phone number"), { target: { value: "meera@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue with contribution/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to their registry" }));
+
+    expect(screen.getByRole("button", { name: "Contributions started" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: /Contribute any amount/i }).hasAttribute("disabled")).toBe(false);
+    expect(screen.getByText("₹10,000 remaining for contributions.")).toBeTruthy();
+  });
+
+  it("copies the public link and keeps the couple signed in after returning to the site", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    await createRegistry();
+    fireEvent.click(screen.getByRole("button", { name: /Copy link/i }));
+    expect(await screen.findByText("Link copied!")).toBeTruthy();
+    expect(writeText).toHaveBeenCalledWith(expect.stringMatching(/#public-registry\?slug=maya-neel/));
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    const navigation = within(screen.getByRole("navigation", { name: "Main navigation" }));
+    expect(navigation.getByRole("button", { name: /Couple sign in/i })).toBeTruthy();
+    fireEvent.click(navigation.getByRole("button", { name: /Couple sign in/i }));
+    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "maya@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "wedding-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+
+    expect(await screen.findByRole("heading", { name: /Maya.*Neel/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Your dashboard" })).toBeTruthy();
+  });
+
+  it("opens the couple's saved registry from its shared URL instead of the sample registry", async () => {
+    await createRegistry({ firstName: "Riya", partnerName: "Kabir" });
+    window.location.hash = "public-registry?slug=riya-kabir";
+
+    expect(await screen.findByRole("heading", { name: /Riya.*Kabir/i })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /Aarav.*Priya/i })).toBeNull();
+  });
+
+  it("takes a guest through an actual demo reservation", () => {
+    render(<App />);
     fireEvent.click(screen.getByRole("link", { name: "Find a registry" }));
-    fireEvent.click(screen.getAllByRole("button", { name: /Choose this gift/i })[0]);
-    expect(screen.getByRole("heading", { name: /A thoughtful choice/i })).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: /Reserve this gift/i })[0]);
+    fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Rohan" } });
+    const contact = screen.getByLabelText("Email or phone number");
+    fireEvent.change(contact, { target: { value: "not-a-contact" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reserve this gift" }));
+    expect(screen.getByRole("alert").textContent).toMatch(/valid email address or phone number/i);
 
-    fireEvent.click(screen.getByRole("button", { name: /Preview reservation confirmation/i }));
+    fireEvent.change(contact, { target: { value: "rohan@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reserve this gift" }));
+
     expect(screen.getByRole("heading", { name: /Your gift, with love/i })).toBeTruthy();
+    expect(screen.getByText("Rohan")).toBeTruthy();
     expect(screen.getByText("Reserved")).toBeTruthy();
   });
 
-  it("takes a group gift guest through payment reporting status", () => {
+  it("takes a guest through an actual demo contribution", () => {
     render(<App />);
-
     fireEvent.click(screen.getByRole("link", { name: "Find a registry" }));
-    fireEvent.click(screen.getByRole("button", { name: /Contribute to this gift/i }));
-    expect(screen.getByRole("heading", { name: /A little, together/i })).toBeTruthy();
-    expect(screen.getByText(/does not collect or process payment/i)).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: /Contribute any amount/i })[0]);
+    fireEvent.change(screen.getByLabelText("Your contribution amount"), { target: { value: "2000" } });
+    fireEvent.change(screen.getByLabelText("Your name"), { target: { value: "Meera" } });
+    fireEvent.change(screen.getByLabelText("Email or phone number"), { target: { value: "meera@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /Continue with contribution/i }));
 
-    fireEvent.click(screen.getByRole("button", { name: /Preview pledge and payment steps/i }));
     expect(screen.getByRole("heading", { name: /Your gift, with love/i })).toBeTruthy();
-    expect(screen.getByText(/Payment reported/i)).toBeTruthy();
+    expect(screen.getByText("₹2,000")).toBeTruthy();
+    expect(screen.getByText("Contribution pledged")).toBeTruthy();
   });
 
-  it("shows gift management from the couple dashboard", () => {
-    render(<App />);
+  it("shows a working product link and wishlist return link on the contribution page", async () => {
+    await createRegistry();
+    fireEvent.click(screen.getByRole("button", { name: /Add a gift/i }));
+    fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: "A lamp" } });
+    fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "4000" } });
+    fireEvent.change(screen.getByLabelText("Product link (optional)"), { target: { value: "https://shop.example.test/lamp" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Preview registry/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Contribute any amount/i }));
 
-    fireEvent.click(within(screen.getByRole("navigation", { name: "Main navigation" })).getByRole("button", { name: /Couple sign in/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Create an account" }));
-    fireEvent.click(screen.getByRole("button", { name: /Continue to registry details/i }));
-    fireEvent.click(screen.getByRole("button", { name: /Preview your dashboard/i }));
+    expect(screen.getByRole("link", { name: /View gift online/i }).getAttribute("href")).toBe("https://shop.example.test/lamp");
+    expect(screen.getByRole("link", { name: /Back to the couple's wishlist/i }).getAttribute("href")).toContain("#public-registry?slug=maya-neel");
+  });
+
+  it("shows gift management from the prototype menu", () => {
+    render(<App />);
     fireEvent.click(screen.getByText("Explore prototype screens"));
     fireEvent.click(screen.getByRole("button", { name: "Gift management" }));
 

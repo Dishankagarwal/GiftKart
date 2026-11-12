@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 
 const screens = [
   ["landing", "Landing page"],
@@ -16,32 +17,271 @@ const screens = [
 
 type Screen = (typeof screens)[number][0];
 
-const gifts = [
+type Gift = {
+  id: string;
+  category: string;
+  emoji: string;
+  name: string;
+  description: string;
+  price: number;
+  link: string;
+  priority?: number;
+};
+
+type Registry = {
+  id: string;
+  slug: string;
+  ownerEmail: string;
+  firstName: string;
+  partnerName: string;
+  weddingDate: string;
+  city: string;
+  welcomeMessage: string;
+  gifts: Gift[];
+};
+
+type DemoAccount = {
+  email: string;
+  salt: string;
+  passwordHash: string;
+};
+
+type GuestActivity = {
+  id: string;
+  registryId: string;
+  giftId: string;
+  kind: "reservation" | "contribution";
+  guestName: string;
+  contact: string;
+  amount: number;
+  status: "reserved" | "pledged" | "payment_reported" | "verified" | "released";
+};
+
+type AppData = {
+  accounts: DemoAccount[];
+  registries: Registry[];
+  activities: GuestActivity[];
+  sessionEmail: string | null;
+};
+
+const STORAGE_KEY = "shaadiledger.demo.v1";
+
+const emptyAppData: AppData = {
+  accounts: [],
+  registries: [],
+  activities: [],
+  sessionEmail: null,
+};
+
+const sampleRegistry: Registry = {
+  id: "sample-registry",
+  slug: "aarav-priya",
+  ownerEmail: "",
+  firstName: "Aarav",
+  partnerName: "Priya",
+  weddingDate: "2027-02-14",
+  city: "Jaipur",
+  welcomeMessage: "Your love is the best gift. If you'd like to give us something more, we've gathered a few things that feel like home.",
+  gifts: [
   {
+    id: "sample-reading-nook",
     category: "For our home",
     emoji: "🪑",
     name: "A little reading nook",
     description: "A cozy chair for slow mornings and long conversations.",
     price: 18500,
-    kind: "Individual gift",
+    link: "",
+    priority: 1,
   },
   {
+    id: "sample-dinnerware",
     category: "For our home",
     emoji: "🍽️",
     name: "Dinnerware for two",
     description: "The plates we'll reach for on ordinary, lovely evenings.",
     price: 7200,
-    kind: "Individual gift",
+    link: "",
+    priority: 2,
   },
   {
+    id: "sample-sea-weekend",
     category: "Our next adventure",
     emoji: "🏝️",
     name: "A weekend by the sea",
     description: "Help us make a few first memories somewhere new.",
     price: 40000,
-    kind: "Group gift",
+    link: "",
+    priority: 3,
   },
-];
+  ],
+};
+
+function loadAppData(): AppData {
+  try {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (!stored) return emptyAppData;
+    const parsed: unknown = JSON.parse(stored);
+    if (
+      typeof parsed !== "object" || parsed === null ||
+      !("accounts" in parsed) || !Array.isArray(parsed.accounts) ||
+      !("registries" in parsed) || !Array.isArray(parsed.registries) ||
+      !("activities" in parsed) || !Array.isArray(parsed.activities) ||
+      !("sessionEmail" in parsed)
+    ) {
+      throw new Error("Saved demo data has an invalid shape");
+    }
+    return parsed as AppData;
+  } catch (error) {
+    console.error("Could not load saved ShaadiLedger demo data", error);
+    return emptyAppData;
+  }
+}
+
+function saveAppData(data: AppData): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  } catch (error) {
+    console.error("Could not save ShaadiLedger demo data", error);
+  }
+}
+
+async function hashPassword(password: string, salt: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  const saltBuffer = new ArrayBuffer(16);
+  new Uint8Array(saltBuffer).set(hexToBytes(salt));
+  const hash = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: saltBuffer, iterations: 120_000, hash: "SHA-256" },
+    key,
+    256,
+  );
+  return bytesToHex(new Uint8Array(hash));
+}
+
+function hexToBytes(value: string): Uint8Array {
+  return new Uint8Array(value.match(/.{2}/g)?.map((pair) => Number.parseInt(pair, 16)) ?? []);
+}
+
+function bytesToHex(value: Uint8Array): string {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function makeSlug(firstName: string, partnerName: string): string {
+  const slug = `${firstName}-${partnerName}`
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug || `wedding-${Date.now().toString(36)}`;
+}
+
+function getRequestedSlug(): string | null {
+  const query = window.location.hash.split("?")[1];
+  return query ? new URLSearchParams(query).get("slug") : null;
+}
+
+function getRegistryLink(registry: Registry): string {
+  return `${window.location.origin}${window.location.pathname}#public-registry?slug=${encodeURIComponent(registry.slug)}`;
+}
+
+function getExternalUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function getProductImageUrl(productUrl: string): string | null {
+  const validUrl = getExternalUrl(productUrl);
+  if (!validUrl) return null;
+  const url = new URL(validUrl);
+  return new URL("/favicon.ico", url.origin).href;
+}
+
+function isValidGuestContact(value: string): boolean {
+  const contact = value.trim();
+  const isEmail = contact.length <= 254 &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contact);
+  const isPhone = contact.length >= 7 && contact.length <= 20 &&
+    /^\+?[0-9 ()-]+$/.test(contact);
+  return isEmail || isPhone;
+}
+
+function orderedGifts(gifts: Gift[]): Array<Gift & { priority: number }> {
+  return gifts
+    .map((gift, index) => ({
+      gift,
+      priority: Number.isInteger(gift.priority) && (gift.priority ?? 0) > 0 ? gift.priority ?? index + 1 : index + 1,
+    }))
+    .sort((first, second) => first.priority - second.priority)
+    .map(({ gift, priority }) => ({ ...gift, priority }));
+}
+
+function withGiftPriorities(gifts: Gift[]): Gift[] {
+  return gifts.map((gift, index) => ({ ...gift, priority: index + 1 }));
+}
+
+function getGiftCommittedAmount(gift: Gift, activities: GuestActivity[]): number {
+  const giftActivities = activities.filter((activity) =>
+    activity.giftId === gift.id &&
+    ["reserved", "pledged", "payment_reported", "verified"].includes(activity.status)
+  );
+  if (giftActivities.some((activity) => activity.kind === "reservation" && activity.status === "reserved")) {
+    return gift.price;
+  }
+  return giftActivities
+    .filter((activity) => activity.kind === "contribution")
+    .reduce((total, activity) => total + activity.amount, 0);
+}
+
+function registryNames(registry: Registry): string {
+  return `${registry.firstName} & ${registry.partnerName}`;
+}
+
+async function copyLink(value: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Try the selection-based fallback when clipboard permissions are unavailable.
+  }
+
+  const field = document.createElement("textarea");
+  field.value = value;
+  field.setAttribute("readonly", "");
+  field.style.position = "fixed";
+  field.style.opacity = "0";
+  document.body.appendChild(field);
+  field.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch (error) {
+    console.error("Could not copy the registry link", error);
+  } finally {
+    field.remove();
+  }
+  return copied;
+}
+
+function formatWeddingDate(value: string): string {
+  if (!value) return "Wedding date to be announced";
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(new Date(`${value}T00:00:00`));
+}
 
 const money = (amount: number) =>
   new Intl.NumberFormat("en-IN", {
@@ -51,18 +291,44 @@ const money = (amount: number) =>
   }).format(amount);
 
 function getScreen(): Screen {
-  const screen = window.location.hash.slice(1) as Screen;
+  const screen = window.location.hash.slice(1).split("?")[0] as Screen;
   return screens.some(([key]) => key === screen) ? screen : "landing";
 }
 
 function App() {
   const [screen, setScreen] = useState<Screen>(getScreen);
+  const [appData, setAppData] = useState<AppData>(loadAppData);
+  const [selectedGiftId, setSelectedGiftId] = useState<string | null>(null);
+  const [selectedRegistryId, setSelectedRegistryId] = useState<string | null>(null);
+  const [editingGiftId, setEditingGiftId] = useState<string | null>(null);
+  const [guestActivityId, setGuestActivityId] = useState<string | null>(null);
+  const requestedSlug = getRequestedSlug();
+  const activeRegistry = useMemo(
+    () => appData.registries.find((registry) => registry.ownerEmail === appData.sessionEmail) ?? null,
+    [appData.registries, appData.sessionEmail],
+  );
+  const requestedRegistry = requestedSlug
+    ? appData.registries.find((registry) => registry.slug === requestedSlug) ?? null
+    : null;
+  const activeGuestActivity = appData.activities.find((activity) => activity.id === guestActivityId);
+  const activityRegistry = activeGuestActivity
+    ? appData.registries.find((registry) => registry.id === activeGuestActivity.registryId) ?? null
+    : null;
+  const selectedRegistry = appData.registries.find((registry) => registry.id === selectedRegistryId) ?? null;
+  const currentRegistry = requestedRegistry ?? activeRegistry ?? selectedRegistry ?? activityRegistry ?? sampleRegistry;
+  const requestedRegistryUnavailable = requestedSlug !== null && requestedRegistry === null;
 
   useEffect(() => {
     const syncScreen = () => setScreen(getScreen());
     window.addEventListener("hashchange", syncScreen);
     return () => window.removeEventListener("hashchange", syncScreen);
   }, []);
+
+  useEffect(() => saveAppData(appData), [appData]);
+
+  const updateAppData = (updater: (current: AppData) => AppData) => {
+    setAppData((current) => updater(current));
+  };
 
   const navigate = (nextScreen: Screen) => {
     window.location.hash = nextScreen;
@@ -74,7 +340,7 @@ function App() {
     <div className="app-shell">
       <div className="prototype-notice">
         <span className="notice-dot" />
-        Product preview · Demo only — changes are not saved
+        Preview mode · Changes are saved only in this browser
       </div>
       <header className="site-header">
         <a
@@ -87,26 +353,148 @@ function App() {
           <span>shaadi<span className="brand-light">ledger</span></span>
         </a>
         <nav className="header-actions" aria-label="Main navigation">
-          <a href="#public-registry" onClick={() => navigate("public-registry")}>
-            Find a registry
-          </a>
-          <button className="button button-dark button-small" onClick={() => navigate("login")}>
-            Couple sign in <span aria-hidden="true">↗</span>
-          </button>
+          {appData.sessionEmail ? (
+            <>
+              <button className="text-button" onClick={() => navigate(activeRegistry ? "dashboard" : "create-registry")}>
+                {activeRegistry ? "Your dashboard" : "Finish your registry"}
+              </button>
+              <button
+                className="button button-dark button-small"
+                onClick={() => {
+                  updateAppData((current) => ({ ...current, sessionEmail: null }));
+                  navigate("landing");
+                }}
+              >
+                Sign out
+              </button>
+            </>
+          ) : (
+            <>
+              <a href="#public-registry" onClick={() => navigate("public-registry")}>
+                Find a registry
+              </a>
+              <button className="button button-dark button-small" onClick={() => navigate("login")}>
+                Couple sign in <span aria-hidden="true">↗</span>
+              </button>
+            </>
+          )}
         </nav>
       </header>
 
       <main>
         {screen === "landing" && <Landing navigate={navigate} />}
-        {screen === "login" && <Login key={screen} navigate={navigate} />}
-        {screen === "create-account" && <Login key={screen} navigate={navigate} initialCreatingAccount />}
-        {screen === "create-registry" && <CreateRegistry navigate={navigate} />}
-        {screen === "dashboard" && <Dashboard navigate={navigate} />}
-        {screen === "edit-gift" && <EditGift navigate={navigate} />}
-        {screen === "public-registry" && <PublicRegistry navigate={navigate} />}
-        {screen === "reserve-gift" && <ReserveGift navigate={navigate} />}
-        {screen === "contribute" && <Contribute navigate={navigate} />}
-        {screen === "guest-status" && <GuestStatus navigate={navigate} />}
+        {screen === "login" && (
+          <Login
+            key={screen}
+            navigate={navigate}
+            accounts={appData.accounts}
+            onUpdate={updateAppData}
+          />
+        )}
+        {screen === "create-account" && (
+          <Login
+            key={screen}
+            navigate={navigate}
+            accounts={appData.accounts}
+            onUpdate={updateAppData}
+            initialCreatingAccount
+          />
+        )}
+        {screen === "create-registry" && (
+          <CreateRegistry
+            navigate={navigate}
+            appData={appData}
+            onUpdate={updateAppData}
+          />
+        )}
+        {screen === "dashboard" && (
+          <Dashboard
+            navigate={navigate}
+            registry={activeRegistry}
+            activities={appData.activities}
+            onCopyLink={copyLink}
+            onUpdate={updateAppData}
+            onAddGift={() => {
+              setEditingGiftId(null);
+              navigate("edit-gift");
+            }}
+            onEditGift={(giftId) => {
+              setEditingGiftId(giftId);
+              navigate("edit-gift");
+            }}
+          />
+        )}
+        {screen === "edit-gift" && (
+          <EditGift
+            navigate={navigate}
+            registry={activeRegistry}
+            existingGift={activeRegistry?.gifts.find((gift) => gift.id === editingGiftId) ?? null}
+            activities={appData.activities}
+            onUpdate={updateAppData}
+          />
+        )}
+        {screen === "public-registry" && (
+          <PublicRegistry
+            navigate={navigate}
+            registry={requestedRegistryUnavailable ? null : currentRegistry}
+            activities={appData.activities}
+            onChooseGift={(giftId) => {
+              setSelectedGiftId(giftId);
+              setSelectedRegistryId(currentRegistry.id);
+            }}
+          />
+        )}
+        {screen === "reserve-gift" && (
+          <ReserveGift
+            registry={currentRegistry}
+            gift={currentRegistry.gifts.find((gift) => gift.id === selectedGiftId) ?? currentRegistry.gifts[0] ?? null}
+            activities={appData.activities}
+            onSubmit={(gift, guestName, contact) => {
+              const activity = {
+                id: crypto.randomUUID(),
+                registryId: currentRegistry.id,
+                giftId: gift.id,
+                kind: "reservation" as const,
+                guestName,
+                contact,
+                amount: gift.price,
+                status: "reserved" as const,
+              };
+              updateAppData((current) => ({ ...current, activities: [...current.activities, activity] }));
+              setGuestActivityId(activity.id);
+              navigate("guest-status");
+            }}
+          />
+        )}
+        {screen === "contribute" && (
+          <Contribute
+            registry={currentRegistry}
+            gift={currentRegistry.gifts.find((gift) => gift.id === selectedGiftId) ?? currentRegistry.gifts[0] ?? null}
+            activities={appData.activities}
+            onSubmit={(gift, guestName, contact, amount) => {
+              const activity = {
+                id: crypto.randomUUID(),
+                registryId: currentRegistry.id,
+                giftId: gift.id,
+                kind: "contribution" as const,
+                guestName,
+                contact,
+                amount,
+                status: "pledged" as const,
+              };
+              updateAppData((current) => ({ ...current, activities: [...current.activities, activity] }));
+              setGuestActivityId(activity.id);
+              navigate("guest-status");
+            }}
+          />
+        )}
+        {screen === "guest-status" && (
+          <GuestStatus
+            navigate={navigate}
+            activity={appData.activities.find((activity) => activity.id === guestActivityId) ?? null}
+            registry={currentRegistry}
+          />
+        )}
         {screen === "management" && <Management navigate={navigate} />}
       </main>
 
@@ -220,7 +608,7 @@ function Landing({ navigate }: { navigate: Navigate }) {
         <div className="steps-grid">
           <Step number="01" title="Make it yours" description="Create your wedding page and add the gifts, ideas, and experiences that feel like you." icon="✎" />
           <Step number="02" title="Share the love" description="Send one private link to the people you love. No app, account, or fuss for guests." icon="↗" />
-          <Step number="03" title="Feel the love" description="Guests choose a gift or join a group gift, then pay you directly, offline." icon="♡" />
+          <Step number="03" title="Feel the love" description="Guests reserve a gift in full or contribute any amount, then pay you directly, offline." icon="♡" />
         </div>
       </section>
 
@@ -254,12 +642,58 @@ function Step({ number, title, description, icon }: { number: string; title: str
 
 function Login({
   navigate,
+  accounts,
+  onUpdate,
   initialCreatingAccount = false,
 }: {
   navigate: Navigate;
+  accounts: DemoAccount[];
+  onUpdate: (updater: (current: AppData) => AppData) => void;
   initialCreatingAccount?: boolean;
 }) {
   const [creatingAccount, setCreatingAccount] = useState(initialCreatingAccount);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError("");
+    setBusy(true);
+    const form = new FormData(event.currentTarget);
+    const email = String(form.get("email") ?? "").trim().toLowerCase();
+    const password = String(form.get("password") ?? "");
+
+    try {
+      if (creatingAccount) {
+        if (accounts.some((account) => account.email === email)) {
+          setError("An account with this email already exists in this browser. Sign in instead.");
+          return;
+        }
+        const salt = bytesToHex(crypto.getRandomValues(new Uint8Array(16)));
+        const passwordHash = await hashPassword(password, salt);
+        onUpdate((current) => ({
+          ...current,
+          accounts: [...current.accounts, { email, salt, passwordHash }],
+          sessionEmail: email,
+        }));
+        navigate("create-registry");
+        return;
+      }
+
+      const account = accounts.find((item) => item.email === email);
+      if (!account || await hashPassword(password, account.salt) !== account.passwordHash) {
+        setError("Email or password is incorrect for accounts saved in this browser.");
+        return;
+      }
+      onUpdate((current) => ({ ...current, sessionEmail: email }));
+      navigate("dashboard");
+    } catch (submitError) {
+      console.error("Could not complete local demo sign-in", submitError);
+      setError("The demo account could not be saved. Check browser storage and try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <section className="form-page section-wrap">
@@ -269,15 +703,12 @@ function Login({
           title={creatingAccount ? "Create your account." : "Your registry awaits."}
           description={creatingAccount ? "Start with an account, then make your wedding page." : "Sign in to make a little magic for your celebration."}
         />
-        <form onSubmit={(event) => event.preventDefault()}>
-          <label>Email address<input type="email" placeholder="you@example.com" autoComplete="email" /></label>
-          <label>Password<input type="password" placeholder={creatingAccount ? "Create a password" : "Enter your password"} autoComplete={creatingAccount ? "new-password" : "current-password"} /></label>
-          <button
-            className="button button-dark button-wide"
-            type="button"
-            onClick={() => creatingAccount && navigate("create-registry")}
-          >
-            {creatingAccount ? "Continue to registry details" : "Sign in"} <span aria-hidden="true">↗</span>
+        <form onSubmit={submit}>
+          <label>Email address<input name="email" type="email" placeholder="you@example.com" autoComplete="email" required /></label>
+          <label>Password<input name="password" type="password" minLength={8} placeholder={creatingAccount ? "Create a password (8+ characters)" : "Enter your password"} autoComplete={creatingAccount ? "new-password" : "current-password"} required /></label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="button button-dark button-wide" type="submit" disabled={busy}>
+            {busy ? "Please wait..." : creatingAccount ? "Continue to registry details" : "Sign in"} <span aria-hidden="true">↗</span>
           </button>
         </form>
         <p className="form-footnote">
@@ -286,61 +717,172 @@ function Login({
             {creatingAccount ? "Sign in" : "Create an account"}
           </button>
         </p>
-        <p className="prototype-help">Account creation and sign-in are visual prototypes, not connected to an account service.</p>
+        <p className="prototype-help">Demo account only: credentials and registry data stay in this browser. This is not Supabase authentication.</p>
       </div>
     </section>
   );
 }
 
-function CreateRegistry({ navigate }: { navigate: Navigate }) {
+function CreateRegistry({
+  navigate,
+  appData,
+  onUpdate,
+}: {
+  navigate: Navigate;
+  appData: AppData;
+  onUpdate: (updater: (current: AppData) => AppData) => void;
+}) {
+  const [error, setError] = useState("");
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const ownerEmail = appData.sessionEmail;
+    if (!ownerEmail) {
+      navigate("login");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    const firstName = String(form.get("firstName") ?? "").trim();
+    const partnerName = String(form.get("partnerName") ?? "").trim();
+    if (!firstName || !partnerName) {
+      setError("Please enter both names to create your registry.");
+      return;
+    }
+
+    const existing = appData.registries.find((registry) => registry.ownerEmail === ownerEmail);
+    let slug = existing?.slug ?? makeSlug(firstName, partnerName);
+    if (!existing && appData.registries.some((registry) => registry.slug === slug)) {
+      slug = `${slug}-${crypto.randomUUID().slice(0, 6)}`;
+    }
+    const registry: Registry = {
+      id: existing?.id ?? crypto.randomUUID(),
+      slug,
+      ownerEmail,
+      firstName,
+      partnerName,
+      weddingDate: String(form.get("weddingDate") ?? ""),
+      city: String(form.get("city") ?? "").trim(),
+      welcomeMessage: String(form.get("welcomeMessage") ?? "").trim(),
+      gifts: existing?.gifts ?? [],
+    };
+    onUpdate((current) => ({
+      ...current,
+      registries: [...current.registries.filter((item) => item.ownerEmail !== ownerEmail), registry],
+      sessionEmail: ownerEmail,
+    }));
+    navigate("dashboard");
+  };
+
   return (
     <section className="form-page section-wrap">
       <div className="form-card form-card-wide">
         <PageIntro eyebrow="A lovely beginning" title="Let's make it yours." description="Start with the details your guests will see." />
-        <form onSubmit={(event) => event.preventDefault()}>
+        <form onSubmit={submit}>
           <div className="field-row">
-            <label>Your name<input placeholder="e.g. Aarav" autoComplete="given-name" /></label>
-            <label>Your partner's name<input placeholder="e.g. Priya" /></label>
+            <label>Your name<input name="firstName" placeholder="e.g. Aarav" autoComplete="given-name" required /></label>
+            <label>Your partner's name<input name="partnerName" placeholder="e.g. Priya" required /></label>
           </div>
           <div className="field-row">
-            <label>Wedding date<input type="date" /></label>
-            <label>City<input placeholder="e.g. Jaipur" /></label>
+            <label>Wedding date<input name="weddingDate" type="date" /></label>
+            <label>City<input name="city" placeholder="e.g. Jaipur" /></label>
           </div>
-          <label>A welcome note <span className="optional">(optional)</span><textarea rows={3} placeholder="A little note to the people celebrating with you..." /></label>
-          <button className="button button-dark button-wide" type="button" onClick={() => navigate("dashboard")}>Preview your dashboard <span aria-hidden="true">↗</span></button>
+          <label>A welcome note <span className="optional">(optional)</span><textarea name="welcomeMessage" rows={3} placeholder="A little note to the people celebrating with you..." /></label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="button button-dark button-wide" type="submit">Save registry and continue <span aria-hidden="true">↗</span></button>
         </form>
-        <p className="prototype-help">This preview does not create or save a registry.</p>
+        <p className="prototype-help">Your registry is saved in this browser only until Supabase is connected.</p>
       </div>
     </section>
   );
 }
 
-function Dashboard({ navigate }: { navigate: Navigate }) {
+function Dashboard({
+  navigate,
+  registry,
+  activities,
+  onCopyLink,
+  onUpdate,
+  onAddGift,
+  onEditGift,
+}: {
+  navigate: Navigate;
+  registry: Registry | null;
+  activities: GuestActivity[];
+  onCopyLink: (value: string) => Promise<boolean>;
+  onUpdate: (updater: (current: AppData) => AppData) => void;
+  onAddGift: () => void;
+  onEditGift: (giftId: string) => void;
+}) {
+  const [copyMessage, setCopyMessage] = useState("");
+  if (!registry) {
+    return (
+      <section className="form-page section-wrap">
+        <div className="form-card">
+          <PageIntro eyebrow="YOUR DASHBOARD" title="Your registry is waiting." description="Create your wedding registry to manage your wishlist." />
+          <button className="button button-dark button-wide" onClick={() => navigate("create-registry")}>Create your registry</button>
+        </div>
+      </section>
+    );
+  }
+  const registryActivities = activities.filter((activity) => activity.registryId === registry.id);
+  const reservedCount = registryActivities.filter((activity) => activity.status === "reserved").length;
+  const verifiedTotal = registryActivities
+    .filter((activity) => activity.kind === "contribution" && activity.status === "verified")
+    .reduce((total, activity) => total + activity.amount, 0);
+
+  const handleCopyLink = async () => {
+    const copied = await onCopyLink(getRegistryLink(registry));
+    setCopyMessage(copied ? "Link copied!" : "Could not copy. Select and copy the link above.");
+  };
+
   return (
     <section className="dashboard-page section-wrap">
       <div className="dashboard-top">
-        <div><Eyebrow>YOUR WEDDING REGISTRY</Eyebrow><h1>Aarav <em>&</em> Priya</h1><p className="muted">14 February 2027 <span>·</span> Jaipur</p></div>
+        <div><Eyebrow>YOUR WEDDING REGISTRY</Eyebrow><h1>{registry.firstName} <em>&</em> {registry.partnerName}</h1><p className="muted">{formatWeddingDate(registry.weddingDate)}{registry.city && <> <span>·</span> {registry.city}</>}</p></div>
         <button className="button button-dark" onClick={() => navigate("public-registry")}>Preview registry <span aria-hidden="true">↗</span></button>
       </div>
       <div className="dashboard-stats">
-        <Stat value="08" label="Gifts on your list" />
-        <Stat value="03" label="Gifts reserved" />
-        <Stat value="₹18,000" label="Group gifts verified" />
+        <Stat value={String(registry.gifts.length).padStart(2, "0")} label="Gifts on your list" />
+        <Stat value={String(reservedCount).padStart(2, "0")} label="Gifts reserved" />
+        <Stat value={money(verifiedTotal)} label="Contributions verified" />
       </div>
       <div className="dashboard-grid">
         <article className="panel">
-          <div className="panel-heading"><div><Eyebrow>YOUR WISHLIST</Eyebrow><h2>A few lovely things</h2></div><button className="text-button" onClick={() => navigate("edit-gift")}>Add a gift +</button></div>
-          {gifts.map((gift) => <GiftRow key={gift.name} gift={gift} />)}
+          <div className="panel-heading"><div><Eyebrow>YOUR WISHLIST</Eyebrow><h2>A few lovely things</h2></div><button className="text-button" onClick={onAddGift}>Add a gift +</button></div>
+          {registry.gifts.length ? orderedGifts(registry.gifts).map((gift, index, gifts) => (
+            <GiftRow
+              key={gift.id}
+              gift={gift}
+              onEdit={() => onEditGift(gift.id)}
+              onMove={(direction) => {
+                const reordered = [...gifts];
+                const nextIndex = index + direction;
+                [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
+                onUpdate((current) => ({
+                  ...current,
+                  registries: current.registries.map((item) =>
+                    item.id === registry.id ? { ...item, gifts: withGiftPriorities(reordered) } : item
+                  ),
+                }));
+              }}
+              canMoveUp={index > 0}
+              canMoveDown={index < gifts.length - 1}
+            />
+          )) : (
+            <div className="empty-list"><p>Your wishlist is empty for now.</p><button className="text-button" onClick={onAddGift}>Add your first gift <span>→</span></button></div>
+          )}
         </article>
         <aside className="panel share-panel">
-          <Eyebrow>YOUR PRIVATE LINK</Eyebrow><h2>Ready to share?</h2>
-          <p>Your guests can browse, choose a gift, and pay you directly.</p>
-          <div className="share-link">shaadiledger.com/w/aarav-priya <span>↗</span></div>
-          <button className="button button-outline button-wide">Copy link</button>
-          <div className="member-note"><span className="member-avatar">A</span><span><b>Registry owner</b><small>Invite your partner as a collaborator</small></span><button aria-label="Invite partner">+</button></div>
+          <Eyebrow>YOUR REGISTRY LINK</Eyebrow><h2>Ready to share?</h2>
+          <p>Guests with this link can browse your gifts, choose how to give, and pay you directly.</p>
+          <a className="share-link" href={getRegistryLink(registry)}>{getRegistryLink(registry)} <span>↗</span></a>
+          <button className="button button-outline button-wide" onClick={handleCopyLink}>Copy link</button>
+          {copyMessage && <p className={copyMessage === "Link copied!" ? "copy-message" : "form-error"} role="status">{copyMessage}</p>}
+          <p className="share-link-help">Preview links use browser-local demo data. Cross-device sharing needs the live Supabase connection.</p>
+          <div className="member-note"><span className="member-avatar">{registry.firstName.slice(0, 1).toUpperCase()}</span><span><b>{registryNames(registry)}</b><small>Registry owner · {registry.ownerEmail}</small></span></div>
         </aside>
       </div>
-      <p className="prototype-help">Dashboard values are sample data. Authentication and saved changes are not connected.</p>
+      <p className="prototype-help">Demo data is saved in this browser only. It is not yet synced to Supabase or available on other devices.</p>
     </section>
   );
 }
@@ -349,126 +891,417 @@ function Stat({ value, label }: { value: string; label: string }) {
   return <div className="stat-card"><strong>{value}</strong><span>{label}</span></div>;
 }
 
-function GiftRow({ gift }: { gift: (typeof gifts)[number] }) {
-  return <div className="gift-row"><span className="gift-thumb">{gift.emoji}</span><span className="gift-row-copy"><b>{gift.name}</b><small>{gift.kind}</small></span><span className="gift-row-price">{money(gift.price)}</span></div>;
+function GiftImage({ gift, className }: { gift: Gift; className: string }) {
+  const [failed, setFailed] = useState(false);
+  const imageUrl = getProductImageUrl(gift.link);
+  useEffect(() => setFailed(false), [imageUrl]);
+  if (imageUrl && !failed) {
+    return <img className={className} src={imageUrl} alt={gift.name} onError={() => setFailed(true)} />;
+  }
+  return <span className={`${className} gift-artwork-placeholder`} aria-hidden="true">{gift.name.trim().slice(0, 1).toUpperCase() || "♡"}</span>;
 }
 
-function EditGift({ navigate }: { navigate: Navigate }) {
+function GiftRow({
+  gift,
+  onEdit,
+  onMove,
+  canMoveUp,
+  canMoveDown,
+}: {
+  gift: Gift;
+  onEdit: () => void;
+  onMove: (direction: -1 | 1) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+}) {
+  return (
+    <div className="gift-row">
+      <span className="gift-thumb"><GiftImage gift={gift} className="gift-thumb-artwork" /></span>
+      <span className="gift-row-copy"><b>{gift.name}</b><small>Priority {gift.priority} · {gift.category}</small></span>
+      <span className="gift-row-price">{money(gift.price)}</span>
+      <button type="button" className="text-button gift-edit-button" onClick={onEdit}>Edit</button>
+      <div className="gift-priority-actions" aria-label={`${gift.name} priority`}>
+        <button type="button" className="priority-button" aria-label={`Move ${gift.name} up`} disabled={!canMoveUp} onClick={() => onMove(-1)}>↑</button>
+        <button type="button" className="priority-button" aria-label={`Move ${gift.name} down`} disabled={!canMoveDown} onClick={() => onMove(1)}>↓</button>
+      </div>
+    </div>
+  );
+}
+
+function EditGift({
+  navigate,
+  registry,
+  existingGift,
+  activities,
+  onUpdate,
+}: {
+  navigate: Navigate;
+  registry: Registry | null;
+  existingGift: Gift | null;
+  activities: GuestActivity[];
+  onUpdate: (updater: (current: AppData) => AppData) => void;
+}) {
+  const [error, setError] = useState("");
+  const priorityLimit = (registry?.gifts.length ?? 0) + (existingGift ? 0 : 1);
+  const initialPriority = existingGift && registry
+    ? orderedGifts(registry.gifts).findIndex((item) => item.id === existingGift.id) + 1
+    : priorityLimit;
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError("");
+    if (!registry) {
+      setError("Sign in and create a registry before adding gifts.");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    const name = String(form.get("name") ?? "").trim();
+    const price = Number(form.get("price"));
+    const priority = Number(form.get("priority"));
+    const productLink = String(form.get("link") ?? "").trim();
+    if (!name || !Number.isFinite(price) || price <= 0) {
+      setError("Enter a gift name and a price greater than zero.");
+      return;
+    }
+    if (!Number.isInteger(priority) || priority < 1 || priority > priorityLimit) {
+      setError("Choose a valid wishlist priority.");
+      return;
+    }
+    if (productLink && !getExternalUrl(productLink)) {
+      setError("Product links must use http or https.");
+      return;
+    }
+    if (existingGift && price < getGiftCommittedAmount(existingGift, activities)) {
+      setError("The gift value cannot be lower than its active reservation or committed contributions.");
+      return;
+    }
+    const category = String(form.get("category") ?? "For our home");
+    const emojis: Record<string, string> = {
+      "For our home": "🏡",
+      "Our next adventure": "✈️",
+      "Something meaningful": "🎁",
+    };
+    const gift: Gift = {
+      id: existingGift?.id ?? crypto.randomUUID(),
+      category,
+      emoji: emojis[category] ?? "🎁",
+      name,
+      description: String(form.get("description") ?? "").trim(),
+      price,
+      link: productLink,
+      priority,
+    };
+    onUpdate((current) => ({
+      ...current,
+      registries: current.registries.map((item) => {
+        if (item.id !== registry.id) return item;
+        const existingGifts = orderedGifts(item.gifts.filter((itemGift) => itemGift.id !== gift.id));
+        return {
+          ...item,
+          gifts: withGiftPriorities([
+            ...existingGifts.slice(0, priority - 1),
+            gift,
+            ...existingGifts.slice(priority - 1),
+          ]),
+        };
+      }),
+    }));
+    navigate("dashboard");
+  };
+
   return (
     <section className="form-page section-wrap">
       <div className="form-card form-card-wide">
-        <PageIntro eyebrow="Your wishlist" title="Add a little wish." description="Choose a gift type and tell your guests why it matters to you." />
-        <form onSubmit={(event) => event.preventDefault()}>
-          <label>Gift name<input placeholder="e.g. A little reading nook" /></label>
-          <label>What makes it special? <span className="optional">(optional)</span><textarea rows={3} placeholder="Add a note for your guests..." /></label>
+        <PageIntro eyebrow="Your wishlist" title={existingGift ? "Edit your wish." : "Add a little wish."} description="Tell your guests what you'd love and why it matters to you. Guests choose whether to reserve it or contribute toward it." />
+        <form onSubmit={submit}>
+          <label>Gift name<input name="name" defaultValue={existingGift?.name} placeholder="e.g. A little reading nook" required /></label>
+          <label>What makes it special? <span className="optional">(optional)</span><textarea name="description" defaultValue={existingGift?.description} rows={3} placeholder="Add a note for your guests..." /></label>
           <div className="field-row">
-            <label>Gift type<select defaultValue="individual"><option value="individual">Individual gift</option><option value="group">Group gift</option></select></label>
-            <label>{/* Target is the total gift value for either type. */}Price or group target<input type="number" min="1" placeholder="e.g. 18500" /></label>
+            <label>Gift value<input name="price" type="number" min="1" step="0.01" defaultValue={existingGift?.price} placeholder="e.g. 18500" required /></label>
+            <label>Category<select name="category" defaultValue={existingGift?.category ?? "For our home"}><option>For our home</option><option>Our next adventure</option><option>Something meaningful</option></select></label>
           </div>
           <div className="field-row">
-            <label>Category<select defaultValue=""><option value="" disabled>Choose a category</option><option>For our home</option><option>Our next adventure</option><option>Something meaningful</option></select></label>
-            <label>Gift link <span className="optional">(optional)</span><input type="url" placeholder="https://" /></label>
+            <label>Wishlist priority<select name="priority" defaultValue={String(initialPriority)}>
+              {Array.from({ length: priorityLimit }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
+            </select></label>
           </div>
-          <button className="button button-dark button-wide" type="button" onClick={() => navigate("dashboard")}>Back to dashboard <span aria-hidden="true">↗</span></button>
+          <label>Product link <span className="optional">(optional)</span><input name="link" type="url" defaultValue={existingGift?.link} placeholder="https://shop.example.com/gift" /></label>
+          <p className="field-note">The gift thumbnail uses the store icon from this product link.</p>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="button button-dark button-wide" type="submit">{existingGift ? "Save gift changes" : "Add gift to wishlist"} <span aria-hidden="true">↗</span></button>
+          <button className="text-button" type="button" onClick={() => navigate("dashboard")}>Back to dashboard</button>
         </form>
-        <p className="prototype-help">Gift details in this prototype are not saved.</p>
+        <p className="prototype-help">Guest contribution choices are shown on the public wishlist. Demo gifts are saved in this browser only.</p>
       </div>
     </section>
   );
 }
 
-function PublicRegistry({ navigate }: { navigate: Navigate }) {
+function PublicRegistry({
+  navigate,
+  registry,
+  activities,
+  onChooseGift,
+}: {
+  navigate: Navigate;
+  registry: Registry | null;
+  activities: GuestActivity[];
+  onChooseGift: (giftId: string) => void;
+}) {
+  if (!registry) {
+    return (
+      <section className="form-page section-wrap">
+        <div className="form-card">
+          <PageIntro eyebrow="REGISTRY UNAVAILABLE" title="We couldn't find this registry." description="This demo link only works in the browser where its registry was created. A shared, cross-device link will work once Supabase is connected." />
+          <button className="button button-dark button-wide" onClick={() => navigate("landing")}>Back to ShaadiLedger</button>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <>
       <section className="registry-cover">
         <div className="registry-cover-flower">✿</div>
         <Eyebrow>WITH FULL HEARTS, WE INVITE YOU</Eyebrow>
-        <h1>Aarav <em>&</em> Priya</h1>
-        <p>14 February 2027 <span>·</span> Jaipur</p>
+        <h1>{registry.firstName} <em>&</em> {registry.partnerName}</h1>
+        <p>{formatWeddingDate(registry.weddingDate)}{registry.city && <> <span>·</span> {registry.city}</>}</p>
         <span className="cover-rule" />
-        <p className="cover-note">Your love is the best gift. If you'd like to give us something more, we've gathered a few things that feel like home.</p>
+        <p className="cover-note">{registry.welcomeMessage || "Your love is the best gift. If you'd like to give us something more, we've gathered a few things that feel like home."}</p>
       </section>
       <section className="section-wrap wishlist-section">
         <div className="section-heading wishlist-heading">
           <div><Eyebrow>A FEW THINGS WE'RE DREAMING OF</Eyebrow><h2>Our little <em>wishlist.</em></h2></div>
-          <p>Choose something that feels right. For shared gifts, every little bit brings us closer.</p>
+          <p>Choose how you would like to celebrate: reserve the whole gift or contribute any amount.</p>
         </div>
-        <div className="gift-grid">
-          {gifts.map((gift, index) => (
-            <article className="wishlist-card" key={gift.name}>
-              <div className={`wishlist-image wishlist-image-${index + 1}`}><span>{gift.emoji}</span><span className="gift-type">{gift.kind}</span></div>
-              <div className="wishlist-card-body">
-                <Eyebrow>{gift.category}</Eyebrow>
-                <h3>{gift.name}</h3><p>{gift.description}</p>
-                {gift.kind === "Group gift" ? (
-                  <div className="progress-area"><div className="progress-label"><span>₹18,000 gifted</span><span>of {money(gift.price)}</span></div><div className="progress-track"><span style={{ width: "45%" }} /></div></div>
-                ) : <p className="gift-price">{money(gift.price)}</p>}
-                <button className="text-button card-link" onClick={() => navigate(gift.kind === "Group gift" ? "contribute" : "reserve-gift")}>
-                  {gift.kind === "Group gift" ? "Contribute to this gift" : "Choose this gift"} <span aria-hidden="true">→</span>
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
+        {registry.gifts.length ? (
+          <div className="gift-grid">
+            {orderedGifts(registry.gifts).map((gift, index) => {
+              const giftActivities = activities.filter((activity) =>
+                activity.registryId === registry.id && activity.giftId === gift.id &&
+                ["reserved", "pledged", "payment_reported", "verified"].includes(activity.status)
+              );
+              const reserved = giftActivities.some((activity) => activity.kind === "reservation" && activity.status === "reserved");
+              const committed = giftActivities.reduce((total, activity) => total + activity.amount, 0);
+              const remaining = Math.max(0, gift.price - committed);
+              const unavailable = reserved || remaining === 0;
+              const productUrl = getExternalUrl(gift.link);
+              return (
+              <article className="wishlist-card" key={gift.id}>
+                <div className={`wishlist-image wishlist-image-${(index % 3) + 1}`}>
+                  <GiftImage gift={gift} className="wishlist-artwork" />
+                </div>
+                  <div className="wishlist-card-body">
+                    <Eyebrow>{gift.category}</Eyebrow>
+                    <h3>{gift.name}</h3><p>{gift.description}</p>
+                    <p className="gift-price">{money(gift.price)}</p>
+                    {productUrl && <a className="product-link" href={productUrl} target="_blank" rel="noopener noreferrer">View gift online <span aria-hidden="true">↗</span></a>}
+                  {reserved && <p className="availability-note">Already reserved by a guest.</p>}
+                  {!reserved && committed > 0 && <p className="availability-note">{money(remaining)} remaining for contributions.</p>}
+                  <div className="guest-gift-actions">
+                    <button className="button button-outline button-wide" disabled={unavailable || committed > 0} onClick={() => {
+                      onChooseGift(gift.id);
+                      navigate("reserve-gift");
+                    }}>{reserved ? "Reserved" : committed > 0 ? "Contributions started" : "Reserve this gift"}</button>
+                    <button className="text-button card-link" disabled={unavailable} onClick={() => {
+                      onChooseGift(gift.id);
+                      navigate("contribute");
+                    }}>{reserved ? "Already reserved" : remaining === 0 ? "Fully contributed" : "Contribute any amount"} <span aria-hidden="true">→</span></button>
+                  </div>
+                </div>
+              </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="empty-list public-empty"><p>This couple has not added gifts yet.</p></div>
+        )}
         <p className="registry-thanks">Thank you for being part of our story. <span>♡</span></p>
       </section>
     </>
   );
 }
 
-function ReserveGift({ navigate }: { navigate: Navigate }) {
-  return (
-    <section className="form-page section-wrap">
-      <div className="form-card form-card-wide">
-        <PageIntro eyebrow="Aarav & Priya · 14 February 2027" title="A thoughtful choice." description="You're choosing “A little reading nook”. Share your name so the couple knows who it's from." />
-        <div className="selected-gift"><span>🪑</span><div><b>A little reading nook</b><small>For our home · {money(18500)}</small></div></div>
-        <form onSubmit={(event) => event.preventDefault()}>
-          <label>Your name<input placeholder="Name the couple will recognize" autoComplete="name" /></label>
-          <label>Email or phone number<input placeholder="One contact method" autoComplete="email" /></label>
-          <button className="button button-dark button-wide" type="button" onClick={() => navigate("guest-status")}>Preview reservation confirmation <span aria-hidden="true">↗</span></button>
-        </form>
-        <p className="form-footnote">The couple will see your name and contact details. You can cancel your reservation later using your private link.</p>
-        <p className="prototype-help">This preview does not reserve the gift.</p>
-      </div>
-    </section>
+function ReserveGift({
+  registry,
+  gift,
+  activities,
+  onSubmit,
+}: {
+  registry: Registry;
+  gift: Gift | null;
+  activities: GuestActivity[];
+  onSubmit: (gift: Gift, guestName: string, contact: string) => void;
+}) {
+  const [error, setError] = useState("");
+  const productUrl = gift ? getExternalUrl(gift.link) : null;
+  const giftActivities = activities.filter((activity) =>
+    activity.registryId === registry.id && activity.giftId === gift?.id &&
+    ["reserved", "pledged", "payment_reported", "verified"].includes(activity.status)
   );
-}
+  const hasReservation = giftActivities.some((activity) => activity.kind === "reservation" && activity.status === "reserved");
+  const hasContributions = giftActivities.some((activity) => activity.kind === "contribution");
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!gift) {
+      setError("This registry has no gifts available yet.");
+      return;
+    }
+    if (hasReservation || hasContributions) {
+      setError(hasReservation
+        ? "This gift has already been reserved."
+        : "Contributions have started, so this gift can no longer be reserved in full.");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    const guestName = String(form.get("guestName") ?? "").trim();
+    const contact = String(form.get("contact") ?? "").trim();
+    if (!guestName || !isValidGuestContact(contact)) {
+      setError("Enter your name and a valid email address or phone number.");
+      return;
+    }
+    onSubmit(gift, guestName, contact);
+  };
 
-function Contribute({ navigate }: { navigate: Navigate }) {
   return (
     <section className="form-page section-wrap">
       <div className="form-card form-card-wide">
-        <PageIntro eyebrow="Aarav & Priya · Group gift" title="A little, together." description="Contribute any amount toward their weekend by the sea. The total gift target is ₹40,000." />
-        <div className="contribution-progress"><div className="progress-label"><span>₹18,000 contributed</span><span>₹22,000 left</span></div><div className="progress-track"><span style={{ width: "45%" }} /></div></div>
-        <form onSubmit={(event) => event.preventDefault()}>
-          <div className="field-row">
-            <label>Your contribution amount<input type="number" min="1" placeholder="e.g. 2,000" /></label>
-            <label>Your name<input placeholder="Name the couple will recognize" /></label>
+        <PageIntro eyebrow={`${registryNames(registry)} · ${formatWeddingDate(registry.weddingDate)}`} title="A thoughtful choice." description={gift ? `You're reserving “${gift.name}”. Share your name so the couple knows who it's from.` : "Choose a gift from the registry before continuing."} />
+        {gift && (
+          <div className="selected-gift">
+            <GiftImage gift={gift} className="selected-gift-artwork" />
+            <div>
+              <b>{gift.name}</b><small>{gift.category} · {money(gift.price)}</small>
+              {productUrl && <a className="product-link" href={productUrl} target="_blank" rel="noopener noreferrer">View gift online <span aria-hidden="true">↗</span></a>}
+            </div>
           </div>
-          <label>Email or phone number<input placeholder="One contact method" autoComplete="email" /></label>
-          <div className="payment-instructions"><Eyebrow>PAY THE COUPLE DIRECTLY</Eyebrow><p>After pledging, use the couple's UPI, bank transfer, or cash instructions. ShaadiLedger does not collect or process payment.</p><span>UPI details are shown in the couple's published instructions.</span></div>
-          <button className="button button-dark button-wide" type="button" onClick={() => navigate("guest-status")}>Preview pledge and payment steps <span aria-hidden="true">↗</span></button>
+        )}
+        {hasReservation && <p className="availability-note">This gift has already been reserved in full.</p>}
+        {!hasReservation && hasContributions && <p className="availability-note">Contributions have started, so this gift can no longer be reserved in full.</p>}
+        <form onSubmit={submit}>
+          <label>Your name<input name="guestName" placeholder="Name the couple will recognize" autoComplete="name" required /></label>
+          <label>Email or phone number<input name="contact" type="text" placeholder="you@example.com or +91 98765 43210" autoComplete="email" required /></label>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="button button-dark button-wide" type="submit" disabled={!gift || hasReservation || hasContributions}>
+            {hasReservation ? "Already reserved" : hasContributions ? "Contributions started" : "Reserve this gift"} <span aria-hidden="true">↗</span>
+          </button>
         </form>
-        <p className="prototype-help">This preview does not create a pledge or report a payment.</p>
+        <p className="form-footnote">The couple will see your name and contact details. They can release a reservation if needed.</p>
+        <p className="form-footnote"><a href={getRegistryLink(registry)}>Back to the couple's wishlist</a></p>
+        <p className="prototype-help">Demo reservation is saved in this browser only.</p>
       </div>
     </section>
   );
 }
 
-function GuestStatus({ navigate }: { navigate: Navigate }) {
+function Contribute({
+  registry,
+  gift,
+  activities,
+  onSubmit,
+}: {
+  registry: Registry;
+  gift: Gift | null;
+  activities: GuestActivity[];
+  onSubmit: (gift: Gift, guestName: string, contact: string, amount: number) => void;
+}) {
+  const [error, setError] = useState("");
+  const productUrl = gift ? getExternalUrl(gift.link) : null;
+  const giftActivities = activities.filter((activity) =>
+    activity.registryId === registry.id && activity.giftId === gift?.id &&
+    activity.kind === "contribution" && ["pledged", "payment_reported", "verified"].includes(activity.status)
+  );
+  const hasReservation = activities.some((activity) =>
+    activity.registryId === registry.id && activity.giftId === gift?.id &&
+    activity.kind === "reservation" && activity.status === "reserved"
+  );
+  const contributed = giftActivities
+    .filter((activity) => activity.status === "verified")
+    .reduce((total, activity) => total + activity.amount, 0);
+  const committed = giftActivities.reduce((total, activity) => total + activity.amount, 0);
+  const remaining = hasReservation ? 0 : Math.max(0, (gift?.price ?? 0) - committed);
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!gift) {
+      setError("This registry has no gifts available yet.");
+      return;
+    }
+    if (hasReservation) {
+      setError("This gift has already been reserved in full.");
+      return;
+    }
+    const form = new FormData(event.currentTarget);
+    const guestName = String(form.get("guestName") ?? "").trim();
+    const contact = String(form.get("contact") ?? "").trim();
+    const amount = Number(form.get("amount"));
+    if (!guestName || !isValidGuestContact(contact) || !Number.isFinite(amount) || amount <= 0) {
+      setError("Enter your name, a valid email address or phone number, and an amount greater than zero.");
+      return;
+    }
+    if (committed + amount > gift.price) {
+      setError("That amount is more than the remaining gift value.");
+      return;
+    }
+    onSubmit(gift, guestName, contact, amount);
+  };
+
+  return (
+    <section className="form-page section-wrap">
+      <div className="form-card form-card-wide">
+        <PageIntro eyebrow={`${registryNames(registry)} · Shared contribution`} title="A little, together." description={gift ? `Contribute any amount toward “${gift.name}”. The total gift value is ${money(gift.price)}.` : "Choose a gift from the registry before continuing."} />
+        {gift && (
+          <div className="selected-gift">
+            <GiftImage gift={gift} className="selected-gift-artwork" />
+            <div>
+              <b>{gift.name}</b><small>{gift.category} · {money(gift.price)}</small>
+              {productUrl && <a className="product-link" href={productUrl} target="_blank" rel="noopener noreferrer">View gift online <span aria-hidden="true">↗</span></a>}
+            </div>
+          </div>
+        )}
+        {hasReservation && <p className="availability-note">This gift has already been reserved in full.</p>}
+        <div className="contribution-progress"><div className="progress-label"><span>{money(contributed)} verified</span><span>{money(remaining)} available</span></div><div className="progress-track"><span style={{ width: `${gift ? Math.min(100, (contributed / gift.price) * 100) : 0}%` }} /></div></div>
+        <form onSubmit={submit}>
+          <div className="field-row">
+            <label>Your contribution amount<input name="amount" type="number" min="1" step="0.01" placeholder="e.g. 2,000" required /></label>
+            <label>Your name<input name="guestName" placeholder="Name the couple will recognize" required /></label>
+          </div>
+          <label>Email or phone number<input name="contact" placeholder="Enter one contact method" autoComplete="email" required /></label>
+          <div className="payment-instructions"><Eyebrow>PAY THE COUPLE DIRECTLY</Eyebrow><p>After pledging, use the couple's UPI, bank transfer, or cash instructions. ShaadiLedger does not collect or process payment.</p><span>UPI details are shown in the couple's published instructions.</span></div>
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button className="button button-dark button-wide" type="submit" disabled={!gift || hasReservation || remaining === 0}>Continue with contribution <span aria-hidden="true">↗</span></button>
+        </form>
+        <p className="form-footnote"><a href={getRegistryLink(registry)}>Back to the couple's wishlist</a></p>
+        <p className="prototype-help">Demo pledge is saved in this browser only. Only couple-verified contributions count as received.</p>
+      </div>
+    </section>
+  );
+}
+
+function GuestStatus({
+  navigate,
+  activity,
+  registry,
+}: {
+  navigate: Navigate;
+  activity: GuestActivity | null;
+  registry: Registry;
+}) {
+  const gift = registry.gifts.find((item) => item.id === activity?.giftId);
   return (
     <section className="form-page section-wrap">
       <div className="form-card status-card">
         <span className="status-icon">♡</span>
         <Eyebrow>YOUR PRIVATE GUEST LINK</Eyebrow>
         <h1>Your gift, with love.</h1>
-        <p className="status-description">This private page shows the current status for the gift you chose.</p>
-        <div className="status-summary">
-          <span>Gift</span><b>A little reading nook</b>
-          <span>Reservation</span><b className="status-pill">Reserved</b>
-          <span>Group contribution</span><b>₹2,000 · Payment reported</b>
-        </div>
-        <p className="form-footnote">Aarav & Priya can see your reservation and will update a reported payment after checking their account. Keep this private link somewhere safe.</p>
+        <p className="status-description">This page shows the demo status for the gift you chose.</p>
+        {activity ? (
+          <div className="status-summary">
+            <span>Gift</span><b>{gift?.name ?? "Registry gift"}</b>
+            <span>Action</span><b className="status-pill">{activity.kind === "reservation" ? "Reserved" : "Contribution pledged"}</b>
+            {activity.kind === "contribution" && <><span>Amount</span><b>{money(activity.amount)}</b></>}
+            <span>Your name</span><b>{activity.guestName}</b>
+          </div>
+        ) : <p className="empty-list">No recent demo activity is available in this browser.</p>}
+        <p className="form-footnote">{registryNames(registry)} can see your name and contact details. Any money is paid directly to the couple, outside ShaadiLedger.</p>
         <button className="button button-outline button-wide" onClick={() => navigate("public-registry")}>Back to their registry</button>
         <p className="prototype-help">Example reservation and contribution statuses only; this private-link flow is not connected.</p>
       </div>

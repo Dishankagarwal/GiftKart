@@ -43,6 +43,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .section-wrap { width: min(1120px, calc(100% - 64px)); margin-inline: auto; }
 .button { min-height: 48px; display: inline-flex; justify-content: center; align-items: center; gap: 22px; padding: 0 22px; border: 1px solid transparent; border-radius: 3px; font-size: 13px; font-weight: 550; letter-spacing: .01em; transition: background .2s, color .2s, transform .2s; }
 .button:hover { transform: translateY(-1px); }
+.button:disabled { cursor: wait; opacity: .65; transform: none; }
 .button-dark { background: var(--green); color: white; }
 .button-dark:hover { background: #243b31; }
 .button-light { background: #f8f4ec; color: var(--green); }
@@ -143,8 +144,14 @@ textarea { resize: vertical; }
 .form-footnote { margin: 19px 0 0; text-align: center; }
 .form-footnote button { padding: 0; border: 0; background: none; color: #44634f; text-decoration: underline; text-underline-offset: 2px; }
 .prototype-help { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid #eeece5; text-align: center; }
+.form-error { margin: 0; color: #9a4438; font-size: 12px; line-height: 1.5; }
+.copy-message { margin: 10px 0 0; color: #496d53; font-size: 11px; text-align: center; }
+.empty-list { padding: 20px 10px; color: #78857a; font-family: var(--serif); font-size: 14px; text-align: center; }
+.empty-list p { margin: 0 0 9px; }
+.public-empty { background: #fffefa; }
 .selected-gift { display: flex; align-items: center; gap: 15px; margin: 0 0 22px; padding: 14px; background: #f2f2eb; }
-.selected-gift > span { width: 45px; height: 45px; display: grid; place-items: center; background: #e6e9df; font-size: 24px; }
+.selected-gift-artwork { width: 52px; height: 52px; flex: 0 0 auto; object-fit: cover; background: #e6e9df; }
+.selected-gift .gift-artwork-placeholder { display: grid; place-items: center; font-size: 24px; }
 .selected-gift b, .selected-gift small { display: block; }
 .selected-gift b { font-family: var(--serif); font-size: 15px; font-weight: 500; }
 .selected-gift small { margin-top: 5px; color: #839087; font-size: 10px; }
@@ -181,7 +188,8 @@ textarea { resize: vertical; }
 .wishlist-image { position: relative; min-height: 185px; display: grid; place-items: center; background: #edf0e8; }
 .wishlist-image-2 { background: #efe7df; }
 .wishlist-image-3 { background: #e8ece8; }
-.wishlist-image > span:first-child { font-size: 58px; filter: drop-shadow(0 10px 12px rgba(49,62,50,.12)); }
+.wishlist-artwork { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.wishlist-artwork.gift-artwork-placeholder { display: grid; place-items: center; font-size: 58px; filter: drop-shadow(0 10px 12px rgba(49,62,50,.12)); }
 .gift-type { position: absolute; right: 11px; top: 11px; padding: 6px 9px; background: rgba(255,254,250,.85); color: #708076; font-size: 8px; letter-spacing: .04em; }
 .wishlist-card-body { padding: 19px 19px 20px; }
 .wishlist-card-body .eyebrow { margin-bottom: 7px; font-size: 8px; }
@@ -191,6 +199,11 @@ textarea { resize: vertical; }
 .progress-area { margin: 13px 0 15px; }
 .progress-area .progress-label { font-size: 9px; }
 .card-link { margin-top: 5px; font-size: 11px; }
+.guest-gift-actions { display: grid; gap: 8px; margin-top: 12px; }
+.guest-gift-actions .button { min-height: 40px; font-size: 11px; }
+.guest-gift-actions .card-link { justify-self: center; }
+.product-link { display: inline-flex; align-items: center; gap: 5px; margin-top: 7px; color: #44634f; font-size: 10px; text-decoration: underline; text-underline-offset: 3px; }
+.wishlist-card-body > .product-link { margin: 0 0 8px; }
 .registry-thanks { margin: 53px 0 0; color: #78867d; font-family: var(--serif); font-size: 16px; font-style: italic; text-align: center; }
 .registry-thanks span { margin-left: 6px; color: #b27f6c; }
 
@@ -209,15 +222,22 @@ textarea { resize: vertical; }
 .panel-heading .eyebrow { margin-bottom: 6px; }
 .panel-heading h2, .share-panel h2 { margin: 0; font-family: var(--serif); font-size: 21px; font-weight: 500; }
 .gift-row, .management-row { min-height: 66px; display: flex; align-items: center; gap: 11px; border-top: 1px solid #eeece5; }
-.gift-thumb { width: 39px; height: 39px; display: grid; flex: 0 0 auto; place-items: center; background: #edf0e8; font-size: 21px; }
+.gift-thumb { width: 39px; height: 39px; display: grid; flex: 0 0 auto; place-items: center; overflow: hidden; background: #edf0e8; font-size: 21px; }
+.gift-thumb-artwork { width: 100%; height: 100%; object-fit: cover; }
+.gift-thumb-artwork.gift-artwork-placeholder { display: grid; place-items: center; }
+.gift-priority-actions { display: flex; gap: 3px; }
+.priority-button { width: 25px; height: 25px; border: 1px solid #dce3db; background: transparent; color: #536959; cursor: pointer; }
+.priority-button:disabled { opacity: .35; cursor: not-allowed; }
 .gift-row-copy { min-width: 0; flex: 1; }
 .gift-row-copy b, .gift-row-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gift-row-copy b { font-family: var(--serif); font-size: 12px; font-weight: 500; }
 .gift-row-copy small { margin-top: 5px; color: #8a938c; font-size: 9px; }
 .gift-row-price { color: #718078; font-size: 10px; }
+.gift-edit-button { font-size: 10px; }
 .share-panel { background: #edf0e8; }
 .share-panel > p { margin: 10px 0 17px; color: #78857a; font-family: var(--serif); font-size: 13px; line-height: 1.55; }
 .share-link { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 10px; margin-bottom: 10px; background: rgba(255,255,255,.65); color: #64736a; font-size: 9px; }
+.share-panel > .share-link-help { margin: 10px 0 0; font-family: var(--sans); font-size: 9px; line-height: 1.5; }
 .member-note { display: flex; align-items: center; gap: 9px; padding-top: 16px; margin-top: 18px; border-top: 1px solid #dce3db; }
 .member-avatar { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: #e1c4b6; color: #745548; font-size: 10px; }
 .member-note > span:nth-child(2) { flex: 1; }
