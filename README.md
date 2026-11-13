@@ -3,6 +3,8 @@
 ShaadiLedger is a personalized wedding gift registry. Couples publish a wishlist of gifts with values; guests decide whether to reserve a gift in full or contribute any amount toward it, then pay the couple directly offline.
 
 > Product principle: Make gifting effortless for guests and gift management effortless for couples.
+>
+> Developers and AI assistants continuing the project should start with [PROJECT_GUIDE.md](./PROJECT_GUIDE.md) for architecture, current implementation status, setup, and the recommended roadmap.
 
 ## Phase 1 scope
 
@@ -96,7 +98,7 @@ The inventory has 10 product areas. Account access is one area with two modes (s
 
 ## UX specification — review draft
 
-This specification describes the intended Phase 1 behavior for the 10 product areas. It is the basis for wireframe review; it does not mean the screens or backend are fully implemented. The current UI is a browser-local demo and is not connected to Supabase.
+This specification describes the intended Phase 1 behavior for the 10 product areas. It is the basis for wireframe review; it does not mean every screen or backend workflow is fully implemented. Without Supabase environment settings, the app uses browser-local demo data. When configured, couple authentication, registry details, publication, and public registry details use Supabase; wishlist and guest workflows remain demo-only until their integration steps are complete.
 
 ### Global navigation and layout
 
@@ -251,17 +253,18 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 - [x] Define the initial schema, business states, indexes, constraints, and access rules.
 - [x] Add the initial SQL migration with RLS policies, atomic guest operations, hashed guest tokens, audit records, and a 72-hour pledge expiry function.
 - [x] Add pgTAP checks for core schema, RLS/grants, and protected guest operations.
-- [ ] Re-run the updated migration and 35 database assertions in an isolated PostgreSQL-compatible test environment with Supabase API stubs.
-- [ ] Run the migration and pgTAP suite against local Supabase; requires Docker Desktop or Podman.
+- [x] Add a follow-up constraint migration enforcing one registry per owner; assert it in pgTAP.
+- [ ] Re-run the updated migration and 36 database assertions in an isolated PostgreSQL-compatible test environment with Supabase API stubs.
+- [x] Run the migrations and 36 pgTAP assertions against local Supabase.
 - [x] Schedule stale-pledge expiry every 15 minutes and clean old rate-limit counters daily with `pg_cron`.
 - [x] Add rate-limited Edge Function wrappers for reservation, pledge, cancellation, payment report, and guest-status operations.
-- [ ] Run the migration and Edge Functions against local Supabase; requires Docker Desktop or Podman.
+- [x] Run all five Edge Functions through 20 local HTTP integration checks; verify reservation, pledge, status, cancellation, payment report, input/CORS errors, and capacity conflicts.
 
 ### 3. Supabase authentication, membership, and registry
 
-- [ ] Replace browser-local demo accounts with Supabase Auth and owner membership.
+- [x] Connect account sign-up/sign-in and session restoration to Supabase Auth; registry insertion creates the database owner membership.
 - [ ] Implement partner invitation and verified collaborator access.
-- [ ] Implement registry create/edit/publish and unique public slug.
+- [x] Implement registry create/edit/publish and public registry detail reads with a unique public slug.
 - [ ] Implement gift/category/image management and public wishlist.
 
 ### 4. Reservations and contributions
@@ -296,7 +299,7 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 
 ## Current implementation status
 
-The prototype now supports browser-local demo sign-up/sign-in, registry creation with the entered couple details, gift creation/editing without a gift-type selector, guest choice to reserve or contribute, activity summaries, and registry-link copying. Couples can set or reorder wishlist priority, and guests can open the linked product from the wishlist or action form. Gift thumbnails use the product site's favicon (or a name monogram if unavailable); retailer product-photo extraction is not part of this browser-only demo. Reservation asks for one valid email-or-phone field to avoid the prior conflicting two-field submission. Demo accounts and data are saved only in the current browser and are not real authentication or a shared database; the app is not connected to Supabase, so a copied link can show the registry only when its data is available in that browser. A localhost link cannot be opened from another device. The Supabase schema/RLS migration, pgTAP checks, guest Edge Function wrappers, rate limiting, and `pg_cron` jobs are also in place. The updated database migration still needs a fresh isolated validation after the guest-choice data-model change, and actual Supabase validation requires Docker Desktop or Podman, which is unavailable here.
+Without Supabase settings, the app retains its browser-local demo: sign-up/sign-in, registry creation, wishlist gift editing/priority, guest reservation/contribution examples, and link copying. With `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` configured, account sign-up/sign-in, session restoration, registry create/edit, publish/unpublish, and public wedding-detail reads use Supabase Auth and the existing RLS-protected schema. Session tokens are stored in the browser; only the public anon key belongs in frontend configuration. Gift CRUD, guest reservations/contributions, payment verification, and notifications are not yet wired to Supabase, and guest actions are disabled in Supabase mode so the UI does not claim those demo operations are persisted. Public registry reads require the database migration and a published registry. Local Supabase migrations and all 36 pgTAP assertions pass; Deno validation and 20 local HTTP integration checks across all five guest Edge Functions also pass. Docker Desktop was reinstalled and its Engine now runs successfully. The [developer guide](./PROJECT_GUIDE.md) records the current status. No remote Supabase project has been configured.
 
 ## Run and test locally
 
@@ -304,6 +307,8 @@ Requires Node.js 20.19+ or 22.12+.
 
 ```sh
 npm install
+cp .env.example .env.local
+# Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in .env.local to use Supabase mode.
 npm run dev
 npm test
 npm run build
@@ -313,7 +318,7 @@ npx supabase test db
 npx supabase functions serve --env-file supabase/functions/.env.local
 ```
 
-The Vitest/Testing Library suite checks the screens, browser-local registration/sign-in, registry details, gift creation, guest reservation/contribution choices, activity, and link copying. The Deno test covers CORS, request validation, database-backed throttling, and fail-closed behavior. These tests do not substitute for database, authorization, concurrency, or end-to-end tests once Supabase is connected.
+The Vitest/Testing Library suite checks the browser-local demo flows. The Deno test covers CORS, request validation, database-backed throttling, and fail-closed behavior. These tests do not substitute for Supabase auth/database, authorization, concurrency, or end-to-end tests. After applying the migration, configure the local Supabase URL and anon key in `.env.local` and restart Vite; do not use the service-role key in the frontend.
 
 The Supabase migration and database assertions are in `supabase/migrations/` and `supabase/tests/database/`. Run them with the Supabase CLI after installing Docker Desktop or Podman. Do not configure the service-role key in the Vite frontend.
 

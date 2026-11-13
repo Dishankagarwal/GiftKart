@@ -1,6 +1,6 @@
 begin;
 
-select plan(35);
+select plan(36);
 
 select ok(
   (select count(*) = 13
@@ -37,6 +37,16 @@ select ok(
       and indexdef ilike '%where (status = ''reserved''%'
   ),
   'only one active reservation can exist per gift'
+);
+
+select ok(
+  exists (
+    select 1 from pg_catalog.pg_indexes
+    where schemaname = 'public'
+      and indexname = 'registries_one_per_owner'
+      and indexdef ilike '%unique%owner_id%'
+  ),
+  'each account can own only one registry'
 );
 
 select ok(

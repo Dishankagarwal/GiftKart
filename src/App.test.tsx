@@ -16,8 +16,9 @@ const screens = [
   ["management", "Gift management", /A little love, coming in/i],
 ] as const;
 
-beforeEach(() => {
-  window.history.replaceState(null, "", window.location.pathname);
+beforeEach(async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  window.history.replaceState(null, "", `${window.location.origin}${window.location.pathname}#landing`);
   window.localStorage.clear();
   vi.spyOn(window, "scrollTo").mockImplementation(() => undefined);
   let uuid = 0;
@@ -57,8 +58,8 @@ async function createRegistry({
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: password } });
   fireEvent.click(screen.getByRole("button", { name: /Continue to registry details/i }));
 
-  const firstNameField = await screen.findByLabelText("Your name");
-  fireEvent.change(firstNameField, { target: { value: firstName } });
+  await screen.findByRole("heading", { name: /Let's make it yours/i });
+  fireEvent.change(screen.getByLabelText("Your name"), { target: { value: firstName } });
   fireEvent.change(screen.getByLabelText("Your partner's name"), { target: { value: partnerName } });
   fireEvent.change(screen.getByLabelText("Wedding date"), { target: { value: "2027-09-12" } });
   fireEvent.change(screen.getByLabelText("City"), { target: { value: "Pune" } });
@@ -140,7 +141,9 @@ describe("ShaadiLedger registry flows", () => {
     const secondGift = screen.getByRole("heading", { name: "Second choice" });
     expect(firstGift.compareDocumentPosition(secondGift) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: /Reserve this gift/i }));
+    const topChoiceCard = firstGift.closest("article");
+    if (!topChoiceCard) throw new Error("Top choice gift card was not rendered.");
+    fireEvent.click(within(topChoiceCard).getByRole("button", { name: /Reserve this gift/i }));
     expect(screen.getByRole("link", { name: /View gift online/i }).getAttribute("href")).toBe("https://shop.example.test/top-choice");
     expect(screen.getByRole("link", { name: /Back to the couple's wishlist/i })).toBeTruthy();
   });

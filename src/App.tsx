@@ -1,5 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import {
+  getOwnedRegistry,
+  getPublicRegistry,
+  isSupabaseConfigured,
+  restoreSession,
+  saveRegistry,
+  signIn,
+  signOut,
+  signUp,
+  supabaseConfigurationError,
+  updateRegistryPublication,
+} from "./services/supabase";
+import type { PublicRegistryDetails, RegistryDetails, SupabaseSession } from "./services/supabase";
 
 const screens = [
   ["landing", "Landing page"],
@@ -38,6 +51,7 @@ type Registry = {
   city: string;
   welcomeMessage: string;
   gifts: Gift[];
+  isPublished?: boolean;
 };
 
 type DemoAccount = {
@@ -73,6 +87,48 @@ const emptyAppData: AppData = {
   sessionEmail: null,
 };
 
+function toAppRegistry(details: RegistryDetails): Registry {
+  return {
+    id: details.id,
+    slug: details.slug,
+    ownerEmail: details.ownerEmail,
+    firstName: details.firstName,
+    partnerName: details.partnerName,
+    weddingDate: details.weddingDate,
+    city: details.city,
+    welcomeMessage: details.welcomeMessage,
+    gifts: [],
+    isPublished: details.isPublished,
+  };
+}
+
+function toPublicAppRegistry(details: PublicRegistryDetails): Registry {
+  const [firstName, partnerName] = details.couple_names.includes(" & ")
+    ? [details.couple_names.slice(0, details.couple_names.indexOf(" & ")), details.couple_names.slice(details.couple_names.indexOf(" & ") + 3)]
+    : [details.couple_names, ""];
+  return {
+    id: details.id,
+    slug: details.public_slug,
+    ownerEmail: "",
+    firstName,
+    partnerName,
+    weddingDate: details.wedding_date ?? "",
+    city: details.city ?? "",
+    welcomeMessage: details.welcome_message,
+    gifts: details.gifts.map((gift, index) => ({
+      id: gift.id,
+      category: gift.category ?? "A little something",
+      emoji: "♡",
+      name: gift.name,
+      description: gift.description,
+      price: Number(gift.target_amount),
+      link: gift.external_url ?? "",
+      priority: index + 1,
+    })),
+    isPublished: true,
+  };
+}
+
 const sampleRegistry: Registry = {
   id: "sample-registry",
   slug: "aarav-priya",
@@ -82,6 +138,7 @@ const sampleRegistry: Registry = {
   weddingDate: "2027-02-14",
   city: "Jaipur",
   welcomeMessage: "Your love is the best gift. If you'd like to give us something more, we've gathered a few things that feel like home.",
+  isPublished: true,
   gifts: [
   {
     id: "sample-reading-nook",
@@ -297,7 +354,14 @@ function getScreen(): Screen {
 
 function App() {
   const [screen, setScreen] = useState<Screen>(getScreen);
-  const [appData, setAppData] = useState<AppData>(loadAppData);
+  const remoteMode = isSupabaseConfigured;
+  const [appData, setAppData] = useState<AppData>(() => remoteMode ? emptyAppData : loadAppData());
+  const [backendSession, setBackendSession] = useState<SupabaseSession | null>(null);
+  const [backendRegistry, setBackendRegistry] = useState<RegistryDetails | null>(null);
+  const [backendReady, setBackendReady] = useState(!remoteMode);
+  const [backendMessage, setBackendMessage] = useState(supabaseConfigurationError ?? "");
+  const [publicRegistry, setPublicRegistry] = useState<Registry | null>(null);
+  const [publicRegistryLoading, setPublicRegistryLoading] = useState(false);
   const [selectedGiftId, setSelectedGiftId] = useState<string | null>(null);
   const [selectedRegistryId, setSelectedRegistryId] = useState<string | null>(null);
   const [editingGiftId, setEditingGiftId] = useState<string | null>(null);
@@ -315,8 +379,62 @@ function App() {
     ? appData.registries.find((registry) => registry.id === activeGuestActivity.registryId) ?? null
     : null;
   const selectedRegistry = appData.registries.find((registry) => registry.id === selectedRegistryId) ?? null;
-  const currentRegistry = requestedRegistry ?? activeRegistry ?? selectedRegistry ?? activityRegistry ?? sampleRegistry;
-  const requestedRegistryUnavailable = requestedSlug !== null && requestedRegistry === null;
+  const currentRegistry = requestedSlug && remoteMode
+    ? publicRegistry ?? requestedRegistry ?? sampleRegistry
+    : requestedRegistry ?? activeRegistry ?? selectedRegistry ?? activityRegistry ?? sampleRegistry;
+  const requestedRegistryUnavailable = requestedSlug !== null &&
+    requestedRegistry === null &&
+    (remoteMode ? !publicRegistryLoading && !publicRegistry : true);
+
+  useEffect(() => {
+    if (!remoteMode) return;
+    let active = true;
+    void (async () => {
+      try {
+        const session = await restoreSession();
+        if (!active || !session) return;
+        setBackendSession(session);
+        const { registry, session: refreshedSession } = await getOwnedRegistry(session);
+        if (!active) return;
+        setBackendSession(refreshedSession);
+        setBackendRegistry(registry);
+        setAppData((current) => ({
+          ...current,
+          sessionEmail: refreshedSession.user.email,
+          registries: registry ? [toAppRegistry(registry)] : [],
+        }));
+      } catch (error) {
+        console.error("Could not restore the Supabase session or registry", error);
+        if (active) setBackendMessage(error instanceof Error ? error.message : "Could not connect to your account.");
+      } finally {
+        if (active) setBackendReady(true);
+      }
+    })();
+    return () => { active = false; };
+  }, [remoteMode]);
+
+  useEffect(() => {
+    if (!remoteMode || !requestedSlug || requestedRegistry) {
+      setPublicRegistry(null);
+      setPublicRegistryLoading(false);
+      return;
+    }
+    let active = true;
+    setPublicRegistry(null);
+    setPublicRegistryLoading(true);
+    void getPublicRegistry(requestedSlug)
+      .then((registry) => {
+        if (active && registry) setPublicRegistry(toPublicAppRegistry(registry));
+      })
+      .catch((error: unknown) => {
+        console.error("Could not load the public Supabase registry", error);
+        if (active) setBackendMessage(error instanceof Error ? error.message : "Could not load this registry.");
+      })
+      .finally(() => {
+        if (active) setPublicRegistryLoading(false);
+      });
+    return () => { active = false; };
+  }, [remoteMode, requestedSlug, requestedRegistry]);
 
   useEffect(() => {
     const syncScreen = () => setScreen(getScreen());
@@ -324,10 +442,72 @@ function App() {
     return () => window.removeEventListener("hashchange", syncScreen);
   }, []);
 
-  useEffect(() => saveAppData(appData), [appData]);
+  useEffect(() => {
+    if (!remoteMode) saveAppData(appData);
+  }, [appData, remoteMode]);
 
   const updateAppData = (updater: (current: AppData) => AppData) => {
     setAppData((current) => updater(current));
+  };
+
+  const loadBackendAccount = async (session: SupabaseSession): Promise<boolean> => {
+    setBackendSession(session);
+    const result = await getOwnedRegistry(session);
+    setBackendSession(result.session);
+    setBackendRegistry(result.registry);
+    setAppData((current) => ({
+      ...current,
+      sessionEmail: result.session.user.email,
+      registries: result.registry ? [toAppRegistry(result.registry)] : [],
+    }));
+    setBackendMessage("");
+    return result.registry !== null;
+  };
+
+  const saveBackendRegistry = async (
+    details: Omit<RegistryDetails, "id" | "ownerId" | "ownerEmail" | "isPublished">,
+    existing: RegistryDetails | null,
+  ): Promise<Registry> => {
+    if (!backendSession) throw new Error("Please sign in again before saving your registry.");
+    const result = await saveRegistry(backendSession, details, existing);
+    const registry = toAppRegistry(result.registry);
+    setBackendSession(result.session);
+    setBackendRegistry(result.registry);
+    setAppData((current) => ({
+      ...current,
+      sessionEmail: result.session.user.email,
+      registries: [registry],
+    }));
+    setBackendMessage("");
+    return registry;
+  };
+
+  const publishBackendRegistry = async (registry: Registry, isPublished: boolean): Promise<void> => {
+    if (!backendSession) throw new Error("Please sign in again before changing your registry's visibility.");
+    const session = await updateRegistryPublication(backendSession, registry.id, isPublished);
+    setBackendSession(session);
+    setBackendRegistry((current) => current ? { ...current, isPublished } : current);
+    setAppData((current) => ({
+      ...current,
+      registries: current.registries.map((item) =>
+        item.id === registry.id ? { ...item, isPublished } : item
+      ),
+    }));
+    setBackendMessage("");
+  };
+
+  const signOutBackend = async () => {
+    try {
+      await signOut(backendSession);
+    } catch (error) {
+      console.error("Could not revoke the Supabase session during sign out", error);
+      setBackendMessage("You were signed out on this device, but Supabase could not revoke the server session.");
+    } finally {
+      setBackendSession(null);
+      setBackendRegistry(null);
+      setAppData((current) => ({ ...current, sessionEmail: null, registries: [] }));
+      navigate("landing");
+    }
   };
 
   const navigate = (nextScreen: Screen) => {
@@ -340,8 +520,11 @@ function App() {
     <div className="app-shell">
       <div className="prototype-notice">
         <span className="notice-dot" />
-        Preview mode · Changes are saved only in this browser
+        {remoteMode
+          ? "Supabase mode · Account and wedding registry details sync to your project"
+          : "Preview mode · Changes are saved only in this browser"}
       </div>
+      {backendMessage && <p className="form-error backend-message" role="alert">{backendMessage}</p>}
       <header className="site-header">
         <a
           className="brand"
@@ -361,8 +544,11 @@ function App() {
               <button
                 className="button button-dark button-small"
                 onClick={() => {
-                  updateAppData((current) => ({ ...current, sessionEmail: null }));
-                  navigate("landing");
+                  if (remoteMode) void signOutBackend();
+                  else {
+                    updateAppData((current) => ({ ...current, sessionEmail: null }));
+                    navigate("landing");
+                  }
                 }}
               >
                 Sign out
@@ -389,6 +575,9 @@ function App() {
             navigate={navigate}
             accounts={appData.accounts}
             onUpdate={updateAppData}
+            remoteMode={remoteMode}
+            onBackendSession={loadBackendAccount}
+            backendReady={backendReady}
           />
         )}
         {screen === "create-account" && (
@@ -398,13 +587,21 @@ function App() {
             accounts={appData.accounts}
             onUpdate={updateAppData}
             initialCreatingAccount
+            remoteMode={remoteMode}
+            onBackendSession={loadBackendAccount}
+            backendReady={backendReady}
           />
         )}
         {screen === "create-registry" && (
           <CreateRegistry
             navigate={navigate}
             appData={appData}
+            existingRegistry={activeRegistry}
             onUpdate={updateAppData}
+            remoteMode={remoteMode}
+            backendSession={backendSession}
+            backendRegistry={backendRegistry}
+            onSaveBackendRegistry={saveBackendRegistry}
           />
         )}
         {screen === "dashboard" && (
@@ -414,6 +611,9 @@ function App() {
             activities={appData.activities}
             onCopyLink={copyLink}
             onUpdate={updateAppData}
+            remoteMode={remoteMode}
+            onTogglePublished={publishBackendRegistry}
+            onEditRegistry={() => navigate("create-registry")}
             onAddGift={() => {
               setEditingGiftId(null);
               navigate("edit-gift");
@@ -424,7 +624,13 @@ function App() {
             }}
           />
         )}
-        {screen === "edit-gift" && (
+        {screen === "edit-gift" && (remoteMode ? (
+          <FeatureComingSoon
+            title="Gift management is the next connection."
+            description="Your account and wedding registry details now save to Supabase. Gift creation and priority changes will sync in the next implementation step."
+            navigate={navigate}
+          />
+        ) : (
           <EditGift
             navigate={navigate}
             registry={activeRegistry}
@@ -432,19 +638,28 @@ function App() {
             activities={appData.activities}
             onUpdate={updateAppData}
           />
-        )}
+        ))}
         {screen === "public-registry" && (
           <PublicRegistry
             navigate={navigate}
             registry={requestedRegistryUnavailable ? null : currentRegistry}
             activities={appData.activities}
+            remoteMode={remoteMode}
+            loading={publicRegistryLoading}
             onChooseGift={(giftId) => {
               setSelectedGiftId(giftId);
               setSelectedRegistryId(currentRegistry.id);
             }}
           />
         )}
-        {screen === "reserve-gift" && (
+        {screen === "reserve-gift" && remoteMode && (
+          <FeatureComingSoon
+            title="Guest gifting is next."
+            description="The account and registry are connected to Supabase. Reservations and contributions will be enabled after their secure database flows are wired in."
+            navigate={navigate}
+          />
+        )}
+        {screen === "reserve-gift" && !remoteMode && (
           <ReserveGift
             registry={currentRegistry}
             gift={currentRegistry.gifts.find((gift) => gift.id === selectedGiftId) ?? currentRegistry.gifts[0] ?? null}
@@ -466,7 +681,14 @@ function App() {
             }}
           />
         )}
-        {screen === "contribute" && (
+        {screen === "contribute" && remoteMode && (
+          <FeatureComingSoon
+            title="Guest contributions are next."
+            description="Reservations and contributions will be enabled after the secure Supabase guest flows are connected."
+            navigate={navigate}
+          />
+        )}
+        {screen === "contribute" && !remoteMode && (
           <Contribute
             registry={currentRegistry}
             gift={currentRegistry.gifts.find((gift) => gift.id === selectedGiftId) ?? currentRegistry.gifts[0] ?? null}
@@ -544,6 +766,25 @@ function PageIntro({
       <h1>{title}</h1>
       <p>{description}</p>
     </div>
+  );
+}
+
+function FeatureComingSoon({
+  title,
+  description,
+  navigate,
+}: {
+  title: string;
+  description: string;
+  navigate: Navigate;
+}) {
+  return (
+    <section className="form-page section-wrap">
+      <div className="form-card">
+        <PageIntro eyebrow="NEXT IMPLEMENTATION STEP" title={title} description={description} />
+        <button className="button button-dark button-wide" onClick={() => navigate("dashboard")}>Back to your dashboard</button>
+      </div>
+    </section>
   );
 }
 
@@ -644,20 +885,28 @@ function Login({
   navigate,
   accounts,
   onUpdate,
+  remoteMode,
+  onBackendSession,
+  backendReady,
   initialCreatingAccount = false,
 }: {
   navigate: Navigate;
   accounts: DemoAccount[];
   onUpdate: (updater: (current: AppData) => AppData) => void;
+  remoteMode: boolean;
+  onBackendSession: (session: SupabaseSession) => Promise<boolean>;
+  backendReady: boolean;
   initialCreatingAccount?: boolean;
 }) {
   const [creatingAccount, setCreatingAccount] = useState(initialCreatingAccount);
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError("");
+    setSuccess("");
     setBusy(true);
     const form = new FormData(event.currentTarget);
     const email = String(form.get("email") ?? "").trim().toLowerCase();
@@ -665,6 +914,16 @@ function Login({
 
     try {
       if (creatingAccount) {
+        if (remoteMode) {
+          const session = await signUp(email, password);
+          if (!session) {
+            setSuccess("Account created. Check your email to confirm it, then sign in to continue.");
+            return;
+          }
+          const hasRegistry = await onBackendSession(session);
+          navigate(hasRegistry ? "dashboard" : "create-registry");
+          return;
+        }
         if (accounts.some((account) => account.email === email)) {
           setError("An account with this email already exists in this browser. Sign in instead.");
           return;
@@ -680,6 +939,13 @@ function Login({
         return;
       }
 
+      if (remoteMode) {
+        const session = await signIn(email, password);
+        const hasRegistry = await onBackendSession(session);
+        navigate(hasRegistry ? "dashboard" : "create-registry");
+        return;
+      }
+
       const account = accounts.find((item) => item.email === email);
       if (!account || await hashPassword(password, account.salt) !== account.passwordHash) {
         setError("Email or password is incorrect for accounts saved in this browser.");
@@ -688,8 +954,10 @@ function Login({
       onUpdate((current) => ({ ...current, sessionEmail: email }));
       navigate("dashboard");
     } catch (submitError) {
-      console.error("Could not complete local demo sign-in", submitError);
-      setError("The demo account could not be saved. Check browser storage and try again.");
+      console.error(`Could not complete ${remoteMode ? "Supabase" : "local demo"} authentication`, submitError);
+      setError(submitError instanceof Error
+        ? submitError.message
+        : "Could not complete sign-in. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -707,8 +975,9 @@ function Login({
           <label>Email address<input name="email" type="email" placeholder="you@example.com" autoComplete="email" required /></label>
           <label>Password<input name="password" type="password" minLength={8} placeholder={creatingAccount ? "Create a password (8+ characters)" : "Enter your password"} autoComplete={creatingAccount ? "new-password" : "current-password"} required /></label>
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="button button-dark button-wide" type="submit" disabled={busy}>
-            {busy ? "Please wait..." : creatingAccount ? "Continue to registry details" : "Sign in"} <span aria-hidden="true">↗</span>
+          {success && <p className="copy-message" role="status">{success}</p>}
+          <button className="button button-dark button-wide" type="submit" disabled={busy || (remoteMode && !backendReady)}>
+            {busy || (remoteMode && !backendReady) ? "Please wait..." : creatingAccount ? "Continue to registry details" : "Sign in"} <span aria-hidden="true">↗</span>
           </button>
         </form>
         <p className="form-footnote">
@@ -717,7 +986,11 @@ function Login({
             {creatingAccount ? "Sign in" : "Create an account"}
           </button>
         </p>
-        <p className="prototype-help">Demo account only: credentials and registry data stay in this browser. This is not Supabase authentication.</p>
+        <p className="prototype-help">
+          {remoteMode
+            ? "Your account is managed by Supabase. Email confirmation may be required before you can create a registry."
+            : "Demo account only: credentials and registry data stay in this browser. This is not Supabase authentication."}
+        </p>
       </div>
     </section>
   );
@@ -726,33 +999,69 @@ function Login({
 function CreateRegistry({
   navigate,
   appData,
+  existingRegistry,
   onUpdate,
+  remoteMode,
+  backendSession,
+  backendRegistry,
+  onSaveBackendRegistry,
 }: {
   navigate: Navigate;
   appData: AppData;
+  existingRegistry: Registry | null;
   onUpdate: (updater: (current: AppData) => AppData) => void;
+  remoteMode: boolean;
+  backendSession: SupabaseSession | null;
+  backendRegistry: RegistryDetails | null;
+  onSaveBackendRegistry: (
+    details: Omit<RegistryDetails, "id" | "ownerId" | "ownerEmail" | "isPublished">,
+    existing: RegistryDetails | null,
+  ) => Promise<Registry>;
 }) {
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const ownerEmail = appData.sessionEmail;
-    if (!ownerEmail) {
+    if (!ownerEmail || (remoteMode && !backendSession)) {
       navigate("login");
       return;
     }
+    setError("");
+    setBusy(true);
     const form = new FormData(event.currentTarget);
     const firstName = String(form.get("firstName") ?? "").trim();
     const partnerName = String(form.get("partnerName") ?? "").trim();
     if (!firstName || !partnerName) {
       setError("Please enter both names to create your registry.");
+      setBusy(false);
       return;
     }
 
     const existing = appData.registries.find((registry) => registry.ownerEmail === ownerEmail);
-    let slug = existing?.slug ?? makeSlug(firstName, partnerName);
+    let slug = (remoteMode ? backendRegistry?.slug : existing?.slug) ?? makeSlug(firstName, partnerName);
     if (!existing && appData.registries.some((registry) => registry.slug === slug)) {
       slug = `${slug}-${crypto.randomUUID().slice(0, 6)}`;
+    }
+    if (remoteMode) {
+      try {
+        await onSaveBackendRegistry({
+          slug,
+          firstName,
+          partnerName,
+          weddingDate: String(form.get("weddingDate") ?? ""),
+          city: String(form.get("city") ?? "").trim(),
+          welcomeMessage: String(form.get("welcomeMessage") ?? "").trim(),
+        }, backendRegistry);
+        navigate("dashboard");
+      } catch (submitError) {
+        console.error("Could not save registry to Supabase", submitError);
+        setError(submitError instanceof Error ? submitError.message : "Could not save your registry. Please try again.");
+      } finally {
+        setBusy(false);
+      }
+      return;
     }
     const registry: Registry = {
       id: existing?.id ?? crypto.randomUUID(),
@@ -779,18 +1088,18 @@ function CreateRegistry({
         <PageIntro eyebrow="A lovely beginning" title="Let's make it yours." description="Start with the details your guests will see." />
         <form onSubmit={submit}>
           <div className="field-row">
-            <label>Your name<input name="firstName" placeholder="e.g. Aarav" autoComplete="given-name" required /></label>
-            <label>Your partner's name<input name="partnerName" placeholder="e.g. Priya" required /></label>
+            <label>Your name<input name="firstName" placeholder="e.g. Aarav" autoComplete="given-name" defaultValue={existingRegistry?.firstName ?? ""} required /></label>
+            <label>Your partner's name<input name="partnerName" placeholder="e.g. Priya" defaultValue={existingRegistry?.partnerName ?? ""} required /></label>
           </div>
           <div className="field-row">
-            <label>Wedding date<input name="weddingDate" type="date" /></label>
-            <label>City<input name="city" placeholder="e.g. Jaipur" /></label>
+            <label>Wedding date<input name="weddingDate" type="date" defaultValue={existingRegistry?.weddingDate ?? ""} /></label>
+            <label>City<input name="city" placeholder="e.g. Jaipur" defaultValue={existingRegistry?.city ?? ""} /></label>
           </div>
-          <label>A welcome note <span className="optional">(optional)</span><textarea name="welcomeMessage" rows={3} placeholder="A little note to the people celebrating with you..." /></label>
+          <label>A welcome note <span className="optional">(optional)</span><textarea name="welcomeMessage" rows={3} placeholder="A little note to the people celebrating with you..." defaultValue={existingRegistry?.welcomeMessage ?? ""} /></label>
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="button button-dark button-wide" type="submit">Save registry and continue <span aria-hidden="true">↗</span></button>
+          <button className="button button-dark button-wide" type="submit" disabled={busy}>{busy ? "Saving..." : "Save registry and continue"} <span aria-hidden="true">↗</span></button>
         </form>
-        <p className="prototype-help">Your registry is saved in this browser only until Supabase is connected.</p>
+        <p className="prototype-help">{remoteMode ? "Your wedding details are saved to your Supabase account." : "Your registry is saved in this browser only until Supabase is connected."}</p>
       </div>
     </section>
   );
@@ -804,6 +1113,9 @@ function Dashboard({
   onUpdate,
   onAddGift,
   onEditGift,
+  remoteMode,
+  onTogglePublished,
+  onEditRegistry,
 }: {
   navigate: Navigate;
   registry: Registry | null;
@@ -812,8 +1124,13 @@ function Dashboard({
   onUpdate: (updater: (current: AppData) => AppData) => void;
   onAddGift: () => void;
   onEditGift: (giftId: string) => void;
+  remoteMode: boolean;
+  onTogglePublished: (registry: Registry, isPublished: boolean) => Promise<void>;
+  onEditRegistry: () => void;
 }) {
   const [copyMessage, setCopyMessage] = useState("");
+  const [publishMessage, setPublishMessage] = useState("");
+  const [publishing, setPublishing] = useState(false);
   if (!registry) {
     return (
       <section className="form-page section-wrap">
@@ -831,15 +1148,33 @@ function Dashboard({
     .reduce((total, activity) => total + activity.amount, 0);
 
   const handleCopyLink = async () => {
+    if (remoteMode && !registry.isPublished) return;
     const copied = await onCopyLink(getRegistryLink(registry));
     setCopyMessage(copied ? "Link copied!" : "Could not copy. Select and copy the link above.");
+  };
+
+  const handlePublication = async () => {
+    setPublishMessage("");
+    setPublishing(true);
+    try {
+      await onTogglePublished(registry, !registry.isPublished);
+      setPublishMessage(registry.isPublished ? "Registry is now unpublished." : "Registry is now published and shareable.");
+    } catch (error) {
+      console.error("Could not change registry publication status", error);
+      setPublishMessage(error instanceof Error ? error.message : "Could not update registry visibility.");
+    } finally {
+      setPublishing(false);
+    }
   };
 
   return (
     <section className="dashboard-page section-wrap">
       <div className="dashboard-top">
         <div><Eyebrow>YOUR WEDDING REGISTRY</Eyebrow><h1>{registry.firstName} <em>&</em> {registry.partnerName}</h1><p className="muted">{formatWeddingDate(registry.weddingDate)}{registry.city && <> <span>·</span> {registry.city}</>}</p></div>
-        <button className="button button-dark" onClick={() => navigate("public-registry")}>Preview registry <span aria-hidden="true">↗</span></button>
+        <div className="dashboard-actions">
+          {remoteMode && <button className="button button-outline" onClick={onEditRegistry}>Edit registry details</button>}
+          <button className="button button-dark" onClick={() => navigate("public-registry")}>Preview registry <span aria-hidden="true">↗</span></button>
+        </div>
       </div>
       <div className="dashboard-stats">
         <Stat value={String(registry.gifts.length).padStart(2, "0")} label="Gifts on your list" />
@@ -848,7 +1183,7 @@ function Dashboard({
       </div>
       <div className="dashboard-grid">
         <article className="panel">
-          <div className="panel-heading"><div><Eyebrow>YOUR WISHLIST</Eyebrow><h2>A few lovely things</h2></div><button className="text-button" onClick={onAddGift}>Add a gift +</button></div>
+          <div className="panel-heading"><div><Eyebrow>YOUR WISHLIST</Eyebrow><h2>A few lovely things</h2></div><button className="text-button" onClick={onAddGift} disabled={remoteMode}>Add a gift +</button></div>
           {registry.gifts.length ? orderedGifts(registry.gifts).map((gift, index, gifts) => (
             <GiftRow
               key={gift.id}
@@ -869,20 +1204,34 @@ function Dashboard({
               canMoveDown={index < gifts.length - 1}
             />
           )) : (
-            <div className="empty-list"><p>Your wishlist is empty for now.</p><button className="text-button" onClick={onAddGift}>Add your first gift <span>→</span></button></div>
+            <div className="empty-list"><p>Your wishlist is empty for now.</p>{remoteMode
+              ? <p>Gift management is the next part we’ll connect to Supabase.</p>
+              : <button className="text-button" onClick={onAddGift}>Add your first gift <span>→</span></button>}</div>
           )}
         </article>
         <aside className="panel share-panel">
           <Eyebrow>YOUR REGISTRY LINK</Eyebrow><h2>Ready to share?</h2>
-          <p>Guests with this link can browse your gifts, choose how to give, and pay you directly.</p>
-          <a className="share-link" href={getRegistryLink(registry)}>{getRegistryLink(registry)} <span>↗</span></a>
-          <button className="button button-outline button-wide" onClick={handleCopyLink}>Copy link</button>
+          <p>{remoteMode && !registry.isPublished
+            ? "Publish your registry when its details are ready. Only published registries can be opened by guests."
+            : "Guests with this link can browse your gifts, choose how to give, and pay you directly."}</p>
+          {remoteMode && !registry.isPublished
+            ? <span className="share-link">{getRegistryLink(registry)}</span>
+            : <a className="share-link" href={getRegistryLink(registry)}>{getRegistryLink(registry)} <span>↗</span></a>}
+          {remoteMode && <button className="button button-dark button-wide" onClick={() => void handlePublication()} disabled={publishing}>
+            {publishing ? "Updating..." : registry.isPublished ? "Unpublish registry" : "Publish registry"}
+          </button>}
+          <button className="button button-outline button-wide" onClick={handleCopyLink} disabled={remoteMode && !registry.isPublished}>Copy link</button>
           {copyMessage && <p className={copyMessage === "Link copied!" ? "copy-message" : "form-error"} role="status">{copyMessage}</p>}
-          <p className="share-link-help">Preview links use browser-local demo data. Cross-device sharing needs the live Supabase connection.</p>
+          {publishMessage && <p className={publishMessage.startsWith("Registry is") ? "copy-message" : "form-error"} role="status">{publishMessage}</p>}
+          <p className="share-link-help">{remoteMode
+            ? "Registry details are stored in Supabase. Gift management and guest actions will be connected next."
+            : "Preview links use browser-local demo data. Cross-device sharing needs the live Supabase connection."}</p>
           <div className="member-note"><span className="member-avatar">{registry.firstName.slice(0, 1).toUpperCase()}</span><span><b>{registryNames(registry)}</b><small>Registry owner · {registry.ownerEmail}</small></span></div>
         </aside>
       </div>
-      <p className="prototype-help">Demo data is saved in this browser only. It is not yet synced to Supabase or available on other devices.</p>
+      <p className="prototype-help">{remoteMode
+        ? "Account and wedding details are synced with Supabase; wishlist gifts and guest activity are not connected yet."
+        : "Demo data is saved in this browser only. It is not yet synced to Supabase or available on other devices."}</p>
     </section>
   );
 }
@@ -1040,18 +1389,35 @@ function PublicRegistry({
   navigate,
   registry,
   activities,
+  remoteMode,
+  loading,
   onChooseGift,
 }: {
   navigate: Navigate;
   registry: Registry | null;
   activities: GuestActivity[];
+  remoteMode: boolean;
+  loading: boolean;
   onChooseGift: (giftId: string) => void;
 }) {
+  if (loading) {
+    return (
+      <section className="form-page section-wrap">
+        <div className="form-card"><PageIntro eyebrow="A MOMENT PLEASE" title="Finding their registry." description="Loading the couple's published wedding details." /></div>
+      </section>
+    );
+  }
   if (!registry) {
     return (
       <section className="form-page section-wrap">
         <div className="form-card">
-          <PageIntro eyebrow="REGISTRY UNAVAILABLE" title="We couldn't find this registry." description="This demo link only works in the browser where its registry was created. A shared, cross-device link will work once Supabase is connected." />
+          <PageIntro
+            eyebrow="REGISTRY UNAVAILABLE"
+            title="We couldn't find this registry."
+            description={remoteMode
+              ? "This registry may not exist or may not have been published yet."
+              : "This demo link only works in the browser where its registry was created. A shared, cross-device link will work once Supabase is connected."}
+          />
           <button className="button button-dark button-wide" onClick={() => navigate("landing")}>Back to ShaadiLedger</button>
         </div>
       </section>
@@ -1071,7 +1437,9 @@ function PublicRegistry({
       <section className="section-wrap wishlist-section">
         <div className="section-heading wishlist-heading">
           <div><Eyebrow>A FEW THINGS WE'RE DREAMING OF</Eyebrow><h2>Our little <em>wishlist.</em></h2></div>
-          <p>Choose how you would like to celebrate: reserve the whole gift or contribute any amount.</p>
+          <p>{remoteMode
+            ? "This registry is connected. Guest reservations and contributions will be enabled in the next step."
+            : "Choose how you would like to celebrate: reserve the whole gift or contribute any amount."}</p>
         </div>
         {registry.gifts.length ? (
           <div className="gift-grid">
@@ -1098,14 +1466,14 @@ function PublicRegistry({
                   {reserved && <p className="availability-note">Already reserved by a guest.</p>}
                   {!reserved && committed > 0 && <p className="availability-note">{money(remaining)} remaining for contributions.</p>}
                   <div className="guest-gift-actions">
-                    <button className="button button-outline button-wide" disabled={unavailable || committed > 0} onClick={() => {
+                    <button className="button button-outline button-wide" disabled={remoteMode || unavailable || committed > 0} onClick={() => {
                       onChooseGift(gift.id);
                       navigate("reserve-gift");
-                    }}>{reserved ? "Reserved" : committed > 0 ? "Contributions started" : "Reserve this gift"}</button>
-                    <button className="text-button card-link" disabled={unavailable} onClick={() => {
+                    }}>{remoteMode ? "Coming soon" : reserved ? "Reserved" : committed > 0 ? "Contributions started" : "Reserve this gift"}</button>
+                    <button className="text-button card-link" disabled={remoteMode || unavailable} onClick={() => {
                       onChooseGift(gift.id);
                       navigate("contribute");
-                    }}>{reserved ? "Already reserved" : remaining === 0 ? "Fully contributed" : "Contribute any amount"} <span aria-hidden="true">→</span></button>
+                    }}>{remoteMode ? "Guest actions coming soon" : reserved ? "Already reserved" : remaining === 0 ? "Fully contributed" : "Contribute any amount"} <span aria-hidden="true">→</span></button>
                   </div>
                 </div>
               </article>
