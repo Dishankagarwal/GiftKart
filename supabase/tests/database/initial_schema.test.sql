@@ -1,6 +1,6 @@
 begin;
 
-select plan(36);
+select plan(37);
 
 select ok(
   (select count(*) = 13
@@ -27,6 +27,19 @@ select ok(
    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
    where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity),
   'RLS is enabled on every application table'
+);
+
+select ok(
+  exists (
+    select 1
+    from pg_catalog.pg_policies
+    where schemaname = 'public'
+      and tablename = 'registries'
+      and policyname = 'registries_select_published_or_member'
+      and qual ilike '%owner_id%'
+      and qual ilike '%auth.uid%'
+  ),
+  'registry owners can read their draft registry after creating it'
 );
 
 select ok(

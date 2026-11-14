@@ -113,7 +113,8 @@ Screen hash names in `src/App.tsx`:
 - `supabase/config.toml` configures local project `shaadiledger`, Postgres 17, API/Auth/Storage ports, and local redirect origins.
 - `supabase/migrations/20261110000000_initial_schema.sql` defines the Phase 1 schema, business functions, RLS/grants, storage policies, and two scheduled jobs.
 - `supabase/migrations/20261113000000_one_registry_per_owner.sql` adds the owner uniqueness constraint.
-- `supabase/tests/database/initial_schema.test.sql` contains 36 pgTAP assertions and runs in a rollback transaction.
+- `supabase/migrations/20261115000000_registry_owner_read_policy.sql` lets an authenticated owner read their own draft registry, including in an insert response.
+- `supabase/tests/database/initial_schema.test.sql` contains 37 pgTAP assertions and runs in a rollback transaction.
 - `supabase/functions/_shared/public_api.ts` provides guest-request validation, CORS, IP-based rate limiting, service RPC calls, and error mapping.
 - `supabase/functions/create-reservation/index.ts` calls `create_guest_reservation` (10 writes/minute/IP).
 - `supabase/functions/create-group-pledge/index.ts` calls `create_group_pledge` (10 writes/minute/IP).
@@ -214,6 +215,8 @@ npx supabase test db
 
 The initial database is empty until migrations are applied by the local Supabase startup/reset flow. `supabase status` prints local API URL and public keys; copy the local API URL and anon key to `.env.local`, restart Vite, then create an account/registry. A fresh local database has no pre-existing wedding registry.
 
+Local Auth email confirmations are enabled. Sign-up confirmation messages are captured by Mailpit at `http://localhost:54324`; use that inbox to complete the confirmation flow without sending email externally.
+
 To run the guest Edge Functions locally, copy the template and set the local-only secrets:
 
 ```sh
@@ -242,10 +245,11 @@ Most recently observed during this work:
 - Supabase CLI `3.1.0` is available via `npx supabase`.
 - Docker Desktop `4.99.0` and Docker Engine `29.9.3` are installed and running on Apple silicon.
 - `npx supabase start` succeeded; all 12 local Supabase containers started, with the database and supporting services healthy.
-- `npx supabase test db` passed all 36 pgTAP assertions in `supabase/tests/database/initial_schema.test.sql`.
+- `npx supabase test db` passed all 37 pgTAP assertions in `supabase/tests/database/initial_schema.test.sql`.
 - `npx deno test --allow-env supabase/functions/tests/public_api.deno.ts` passed the request validation, CORS, body-size, rate-limit, and fail-closed unit checks.
 - All five guest Edge Functions passed 20 local HTTP integration checks: reservation and cancellation, contribution pledge and payment reporting, guest status privacy, invalid inputs, CORS/method rejection, reservation/contribution conflicts, and pledge capacity. Temporary test records and the generated local function secret were removed.
 - Hosted Supabase Auth/registry flows and browser integration with guest endpoints remain unverified; no remote Supabase project has been configured.
+- On Windows, local Supabase was started with Docker Desktop/WSL2. The app was configured via ignored `.env.local`; browser checks passed for sign-up and email confirmation through Mailpit, sign-in, session restore, sign-out, registry create/edit, publishing, and public slug fetch. Temporary test accounts and registries were removed.
 
 Run the frontend suite and build:
 
@@ -263,14 +267,14 @@ npx supabase test db
 npx supabase functions serve --env-file supabase/functions/.env.local
 ```
 
-The pgTAP plan currently declares 36 assertions. If adding/removing assertions, update `select plan(...)` and verify the actual count.
+The pgTAP plan currently declares 37 assertions. If adding/removing assertions, update `select plan(...)` and verify the actual count.
 
 ## 8. Recommended continuation roadmap
 
 Complete work in small vertical slices, keeping the browser-local demo working:
 
 1. **Local backend validation (complete):** Docker Engine and the local Supabase stack run; migrations apply, all 36 pgTAP assertions pass, the Deno request/rate-limit test passes, and all five Edge Functions pass local HTTP integration checks.
-2. **Configure local app connection:** use the URL and anon key from `npx supabase status` in ignored `.env.local`; test email-confirmation and sign-in flows against local Auth. Verify account session restore, sign-out, create/edit registry, publishing, and public slug fetch.
+2. **Configure local app connection (complete):** use the URL and anon key from `npx supabase status` in ignored `.env.local`. Local Auth confirmation through Mailpit, sign-in, session restore, sign-out, registry create/edit, publishing, and public slug fetch have been verified. A registry insert-response RLS policy issue was fixed with an owner-only read allowance and regression assertion. Hosted Supabase remains unconfigured and unverified.
 3. **Connect gift/category management:** persist gift records and sort order with RLS; preserve gift product links and category; test editing/reordering and public read. Handle unique slug collisions and one-registry constraints with actionable form errors.
 4. **Connect guest workflows:** wire existing create-reservation/create-group-pledge Edge Functions, private status/cancel/report endpoints, and secure token hand-off. Do not call privileged RPCs directly from the browser.
 5. **Connect member management:** query guest reservations/reports under RLS; wire release and contribution review. Only verified contribution values count as collected.
