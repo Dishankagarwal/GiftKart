@@ -2,9 +2,22 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
   getOwnedRegistry,
+  getGuestActivity,
   getPublicRegistry,
+  getRegistryManagementActivities,
+  getRegistryPaymentSettings,
   isSupabaseConfigured,
+  cancelGuestReservation,
+  createGuestPledge,
+  createGuestReservation,
+  releaseRegistryPledge,
+  releaseRegistryReservation,
+  reorderRegistryGifts,
+  reviewRegistryContribution,
+  saveRegistryPaymentSettings,
+  reportGuestPayment,
   restoreSession,
+  saveRegistryGift,
   saveRegistry,
   signIn,
   signOut,
@@ -12,7 +25,16 @@ import {
   supabaseConfigurationError,
   updateRegistryPublication,
 } from "./services/supabase";
-import type { PublicRegistryDetails, RegistryDetails, SupabaseSession } from "./services/supabase";
+import type {
+  GuestActivityDetails,
+  PublicRegistryDetails,
+  RegistryDetails,
+  RegistryManagementActivity,
+  RegistryPaymentSettings,
+  RegistryPaymentRecipient,
+  RegistryGift,
+  SupabaseSession,
+} from "./services/supabase";
 
 const screens = [
   ["landing", "Landing page"],
@@ -39,6 +61,9 @@ type Gift = {
   price: number;
   link: string;
   priority?: number;
+  committedAmount?: number;
+  verifiedAmount?: number;
+  isReserved?: boolean;
 };
 
 type Registry = {
@@ -51,7 +76,9 @@ type Registry = {
   city: string;
   welcomeMessage: string;
   gifts: Gift[];
+  categories: string[];
   isPublished?: boolean;
+  paymentInstructions?: PublicRegistryDetails["payment_instructions"];
 };
 
 type DemoAccount = {
@@ -68,7 +95,9 @@ type GuestActivity = {
   guestName: string;
   contact: string;
   amount: number;
-  status: "reserved" | "pledged" | "payment_reported" | "verified" | "released";
+  status: "reserved" | "cancelled" | "pledged" | "payment_reported" | "verified" | "rejected" | "expired" | "released";
+  giftName?: string;
+  coupleNames?: string;
 };
 
 type AppData = {
@@ -97,7 +126,12 @@ function toAppRegistry(details: RegistryDetails): Registry {
     weddingDate: details.weddingDate,
     city: details.city,
     welcomeMessage: details.welcomeMessage,
-    gifts: [],
+    gifts: details.gifts.map((gift, index) => ({
+      ...gift,
+      emoji: "♡",
+      priority: index + 1,
+    })),
+    categories: details.categories,
     isPublished: details.isPublished,
   };
 }
@@ -124,8 +158,13 @@ function toPublicAppRegistry(details: PublicRegistryDetails): Registry {
       price: Number(gift.target_amount),
       link: gift.external_url ?? "",
       priority: index + 1,
+      committedAmount: Number(gift.committed_amount),
+      verifiedAmount: Number(gift.verified_amount),
+      isReserved: gift.is_reserved,
     })),
+    categories: [...new Set(details.gifts.map((gift) => gift.category).filter((category): category is string => Boolean(category)))],
     isPublished: true,
+    paymentInstructions: details.payment_instructions,
   };
 }
 
@@ -139,6 +178,7 @@ const sampleRegistry: Registry = {
   city: "Jaipur",
   welcomeMessage: "Your love is the best gift. If you'd like to give us something more, we've gathered a few things that feel like home.",
   isPublished: true,
+  categories: ["For our home", "Our next adventure", "Something meaningful"],
   gifts: [
   {
     id: "sample-reading-nook",
@@ -241,6 +281,12 @@ function makeSlug(firstName: string, partnerName: string): string {
 function getRequestedSlug(): string | null {
   const query = window.location.hash.split("?")[1];
   return query ? new URLSearchParams(query).get("slug") : null;
+}
+
+function getRequestedGuestToken(): string | null {
+  const query = window.location.hash.split("?")[1];
+  const token = query ? new URLSearchParams(query).get("token") : null;
+  return token && /^[0-9a-f]{64}$/i.test(token) ? token : null;
 }
 
 function getRegistryLink(registry: Registry): string {
@@ -364,9 +410,22 @@ function App() {
   const [publicRegistryLoading, setPublicRegistryLoading] = useState(false);
   const [selectedGiftId, setSelectedGiftId] = useState<string | null>(null);
   const [selectedRegistryId, setSelectedRegistryId] = useState<string | null>(null);
+  const [selectedGuestRegistry, setSelectedGuestRegistry] = useState<Registry | null>(null);
   const [editingGiftId, setEditingGiftId] = useState<string | null>(null);
   const [guestActivityId, setGuestActivityId] = useState<string | null>(null);
+  const [remoteGuestActivity, setRemoteGuestActivity] = useState<GuestActivityDetails | null>(null);
+  const [guestStatusLoading, setGuestStatusLoading] = useState(false);
+  const [guestStatusError, setGuestStatusError] = useState("");
+  const [managementActivities, setManagementActivities] = useState<RegistryManagementActivity[]>([]);
+  const [managementLoading, setManagementLoading] = useState(false);
+  const [managementError, setManagementError] = useState("");
+  const [managementReload, setManagementReload] = useState(0);
+  const [paymentSettings, setPaymentSettings] = useState<RegistryPaymentSettings | null>(null);
+  const [paymentSettingsLoading, setPaymentSettingsLoading] = useState(remoteMode);
+  const [paymentSettingsError, setPaymentSettingsError] = useState("");
+  const [paymentSettingsReload, setPaymentSettingsReload] = useState(0);
   const requestedSlug = getRequestedSlug();
+  const guestToken = getRequestedGuestToken();
   const activeRegistry = useMemo(
     () => appData.registries.find((registry) => registry.ownerEmail === appData.sessionEmail) ?? null,
     [appData.registries, appData.sessionEmail],
@@ -379,9 +438,12 @@ function App() {
     ? appData.registries.find((registry) => registry.id === activeGuestActivity.registryId) ?? null
     : null;
   const selectedRegistry = appData.registries.find((registry) => registry.id === selectedRegistryId) ?? null;
+  const selectedFlowRegistry = screen === "contribute" || screen === "reserve-gift"
+    ? selectedGuestRegistry
+    : null;
   const currentRegistry = requestedSlug && remoteMode
     ? publicRegistry ?? requestedRegistry ?? sampleRegistry
-    : requestedRegistry ?? activeRegistry ?? selectedRegistry ?? activityRegistry ?? sampleRegistry;
+    : requestedRegistry ?? selectedFlowRegistry ?? activeRegistry ?? selectedRegistry ?? selectedGuestRegistry ?? activityRegistry ?? sampleRegistry;
   const requestedRegistryUnavailable = requestedSlug !== null &&
     requestedRegistry === null &&
     (remoteMode ? !publicRegistryLoading && !publicRegistry : true);
@@ -414,7 +476,7 @@ function App() {
   }, [remoteMode]);
 
   useEffect(() => {
-    if (!remoteMode || !requestedSlug || requestedRegistry) {
+    if (!remoteMode || !requestedSlug) {
       setPublicRegistry(null);
       setPublicRegistryLoading(false);
       return;
@@ -435,6 +497,93 @@ function App() {
       });
     return () => { active = false; };
   }, [remoteMode, requestedSlug, requestedRegistry]);
+
+  useEffect(() => {
+    if (!remoteMode || screen !== "guest-status") {
+      setRemoteGuestActivity(null);
+      setGuestStatusError("");
+      setGuestStatusLoading(false);
+      return;
+    }
+    if (!guestToken) {
+      setRemoteGuestActivity(null);
+      setGuestStatusError("This private status link is missing a valid access token.");
+      setGuestStatusLoading(false);
+      return;
+    }
+    let active = true;
+    setRemoteGuestActivity(null);
+    setGuestStatusError("");
+    setGuestStatusLoading(true);
+    void getGuestActivity(guestToken)
+      .then((activity) => {
+        if (active) setRemoteGuestActivity(activity);
+      })
+      .catch((error: unknown) => {
+        console.error("Could not load guest status", error);
+        if (active) setGuestStatusError(error instanceof Error ? error.message : "Could not load this guest status.");
+      })
+      .finally(() => {
+        if (active) setGuestStatusLoading(false);
+      });
+    return () => { active = false; };
+  }, [remoteMode, screen, guestToken]);
+
+  useEffect(() => {
+    if (!remoteMode || screen !== "management") {
+      setManagementLoading(false);
+      setManagementError("");
+      return;
+    }
+    if (!backendSession || !backendRegistry) {
+      setManagementActivities([]);
+      setManagementLoading(false);
+      setManagementError("");
+      return;
+    }
+    let active = true;
+    setManagementLoading(true);
+    setManagementError("");
+    void getRegistryManagementActivities(backendSession, backendRegistry.id)
+      .then((result) => {
+        if (!active) return;
+        setBackendSession(result.session);
+        setManagementActivities(result.activities);
+      })
+      .catch((error: unknown) => {
+        console.error("Could not load registry guest activity", error);
+        if (active) setManagementError(error instanceof Error ? error.message : "Could not load guest activity.");
+      })
+      .finally(() => {
+        if (active) setManagementLoading(false);
+      });
+    return () => { active = false; };
+  }, [remoteMode, screen, backendSession, backendRegistry?.id, managementReload]);
+
+  useEffect(() => {
+    if (!remoteMode || screen !== "dashboard" || !backendSession || !backendRegistry) {
+      setPaymentSettingsLoading(false);
+      setPaymentSettingsError("");
+      return;
+    }
+    let active = true;
+    setPaymentSettingsLoading(true);
+    setPaymentSettingsError("");
+    void getRegistryPaymentSettings(backendSession, backendRegistry.id)
+      .then((result) => {
+        if (!active) return;
+        setBackendSession(result.session);
+        setPaymentSettings(result.settings);
+      })
+      .catch((error: unknown) => {
+        console.error("Could not load registry payment instructions", error);
+        if (active) setPaymentSettingsError(error instanceof Error ? error.message : "Could not load payment instructions.");
+      })
+      .finally(() => {
+        if (active) setPaymentSettingsLoading(false);
+      });
+    return () => { active = false; };
+  }, [remoteMode, screen, backendSession, backendRegistry?.id, paymentSettingsReload]);
 
   useEffect(() => {
     const syncScreen = () => setScreen(getScreen());
@@ -465,14 +614,19 @@ function App() {
   };
 
   const saveBackendRegistry = async (
-    details: Omit<RegistryDetails, "id" | "ownerId" | "ownerEmail" | "isPublished">,
+    details: Omit<RegistryDetails, "id" | "ownerId" | "ownerEmail" | "isPublished" | "gifts" | "categories">,
     existing: RegistryDetails | null,
   ): Promise<Registry> => {
     if (!backendSession) throw new Error("Please sign in again before saving your registry.");
     const result = await saveRegistry(backendSession, details, existing);
-    const registry = toAppRegistry(result.registry);
+    const savedDetails = {
+      ...result.registry,
+      gifts: existing ? backendRegistry?.gifts ?? [] : [],
+      categories: existing ? backendRegistry?.categories ?? [] : [],
+    };
+    const registry = toAppRegistry(savedDetails);
     setBackendSession(result.session);
-    setBackendRegistry(result.registry);
+    setBackendRegistry(savedDetails);
     setAppData((current) => ({
       ...current,
       sessionEmail: result.session.user.email,
@@ -480,6 +634,121 @@ function App() {
     }));
     setBackendMessage("");
     return registry;
+  };
+
+  const persistGiftChanges = async (registryId: string, gift: Gift, gifts: Gift[]): Promise<void> => {
+    let session = backendSession;
+    if (remoteMode) {
+      if (!session) throw new Error("Please sign in again before saving wishlist changes.");
+      const persistedGift: RegistryGift = {
+        id: gift.id,
+        category: gift.category,
+        name: gift.name,
+        description: gift.description,
+        price: gift.price,
+        link: gift.link,
+        priority: gift.priority ?? gifts.findIndex((item) => item.id === gift.id) + 1,
+      };
+      session = await saveRegistryGift(
+        session,
+        registryId,
+        persistedGift,
+        gifts.map((item) => item.id),
+      );
+      setBackendSession(session);
+    }
+
+    const categories = [...new Set(gifts.map((item) => item.category.trim()).filter(Boolean))];
+    updateAppData((current) => ({
+      ...current,
+      registries: current.registries.map((registry) =>
+        registry.id === registryId
+          ? { ...registry, gifts, categories: [...new Set([...(registry.categories ?? []), ...categories])] }
+          : registry
+      ),
+    }));
+    if (remoteMode) {
+      const persistedGifts: RegistryGift[] = gifts.map(({ emoji: _emoji, ...item }, index) => ({
+        ...item,
+        priority: index + 1,
+      }));
+      setBackendRegistry((current) => current && current.id === registryId
+        ? {
+          ...current,
+          gifts: persistedGifts,
+          categories: [...new Set([...current.categories, ...categories])],
+        }
+        : current);
+    }
+    setBackendMessage("");
+  };
+
+  const persistGiftOrder = async (registryId: string, gifts: Gift[]): Promise<void> => {
+    if (remoteMode) {
+      if (!backendSession) throw new Error("Please sign in again before changing wishlist priority.");
+      const session = await reorderRegistryGifts(
+        backendSession,
+        registryId,
+        gifts.map((gift) => gift.id),
+      );
+      setBackendSession(session);
+    }
+    const prioritized = withGiftPriorities(gifts);
+    updateAppData((current) => ({
+      ...current,
+      registries: current.registries.map((registry) =>
+        registry.id === registryId ? { ...registry, gifts: prioritized } : registry
+      ),
+    }));
+    if (remoteMode) {
+      const persistedGifts: RegistryGift[] = prioritized.map(({ emoji: _emoji, ...gift }, index) => ({
+        ...gift,
+        priority: index + 1,
+      }));
+      setBackendRegistry((current) => current && current.id === registryId
+        ? {
+          ...current,
+          gifts: persistedGifts,
+        }
+        : current);
+    }
+    setBackendMessage("");
+  };
+
+  const refreshManagementActivities = async (session: SupabaseSession, registryId: string): Promise<void> => {
+    const result = await getRegistryManagementActivities(session, registryId);
+    setBackendSession(result.session);
+    setManagementActivities(result.activities);
+  };
+
+  const manageReservation = async (reservationId: string): Promise<void> => {
+    if (!backendSession || !backendRegistry) throw new Error("Please sign in again to manage reservations.");
+    const session = await releaseRegistryReservation(backendSession, reservationId);
+    await refreshManagementActivities(session, backendRegistry.id);
+  };
+
+  const managePledge = async (contributionId: string): Promise<void> => {
+    if (!backendSession || !backendRegistry) throw new Error("Please sign in again to manage contributions.");
+    const session = await releaseRegistryPledge(backendSession, contributionId);
+    await refreshManagementActivities(session, backendRegistry.id);
+  };
+
+  const decideContribution = async (
+    contributionId: string,
+    decision: "verified" | "rejected",
+    reason: string,
+  ): Promise<void> => {
+    if (!backendSession || !backendRegistry) throw new Error("Please sign in again to review contributions.");
+    const session = await reviewRegistryContribution(backendSession, contributionId, decision, reason);
+    await refreshManagementActivities(session, backendRegistry.id);
+  };
+
+  const savePaymentSettings = async (settings: RegistryPaymentSettings): Promise<void> => {
+    if (!backendSession || !backendRegistry) throw new Error("Please sign in again before saving payment instructions.");
+    const result = await saveRegistryPaymentSettings(backendSession, backendRegistry.id, settings);
+    setBackendSession(result.session);
+    setPaymentSettings(result.settings);
+    setPaymentSettingsError("");
   };
 
   const publishBackendRegistry = async (registry: Registry, isPublished: boolean): Promise<void> => {
@@ -510,8 +779,8 @@ function App() {
     }
   };
 
-  const navigate = (nextScreen: Screen) => {
-    window.location.hash = nextScreen;
+  const navigate = (nextScreen: Screen, query = "") => {
+    window.location.hash = `${nextScreen}${query}`;
     setScreen(nextScreen);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -610,10 +879,15 @@ function App() {
             registry={activeRegistry}
             activities={appData.activities}
             onCopyLink={copyLink}
-            onUpdate={updateAppData}
             remoteMode={remoteMode}
             onTogglePublished={publishBackendRegistry}
             onEditRegistry={() => navigate("create-registry")}
+            paymentSettings={paymentSettings}
+            paymentSettingsLoading={paymentSettingsLoading}
+            paymentSettingsError={paymentSettingsError}
+            onRetryPaymentSettings={() => setPaymentSettingsReload((current) => current + 1)}
+            onSavePaymentSettings={savePaymentSettings}
+            onReorderGifts={(gifts) => persistGiftOrder(activeRegistry?.id ?? "", gifts)}
             onAddGift={() => {
               setEditingGiftId(null);
               navigate("edit-gift");
@@ -624,21 +898,16 @@ function App() {
             }}
           />
         )}
-        {screen === "edit-gift" && (remoteMode ? (
-          <FeatureComingSoon
-            title="Gift management is the next connection."
-            description="Your account and wedding registry details now save to Supabase. Gift creation and priority changes will sync in the next implementation step."
-            navigate={navigate}
-          />
-        ) : (
+        {screen === "edit-gift" && (
           <EditGift
             navigate={navigate}
             registry={activeRegistry}
             existingGift={activeRegistry?.gifts.find((gift) => gift.id === editingGiftId) ?? null}
             activities={appData.activities}
-            onUpdate={updateAppData}
+            remoteMode={remoteMode}
+            onSave={(gift, gifts) => persistGiftChanges(activeRegistry?.id ?? "", gift, gifts)}
           />
-        ))}
+        )}
         {screen === "public-registry" && (
           <PublicRegistry
             navigate={navigate}
@@ -649,22 +918,22 @@ function App() {
             onChooseGift={(giftId) => {
               setSelectedGiftId(giftId);
               setSelectedRegistryId(currentRegistry.id);
+              setSelectedGuestRegistry(currentRegistry);
             }}
           />
         )}
-        {screen === "reserve-gift" && remoteMode && (
-          <FeatureComingSoon
-            title="Guest gifting is next."
-            description="The account and registry are connected to Supabase. Reservations and contributions will be enabled after their secure database flows are wired in."
-            navigate={navigate}
-          />
-        )}
-        {screen === "reserve-gift" && !remoteMode && (
+        {screen === "reserve-gift" && (
           <ReserveGift
             registry={currentRegistry}
             gift={currentRegistry.gifts.find((gift) => gift.id === selectedGiftId) ?? currentRegistry.gifts[0] ?? null}
             activities={appData.activities}
-            onSubmit={(gift, guestName, contact) => {
+            remoteMode={remoteMode}
+            onSubmit={async (gift, guestName, contact) => {
+              if (remoteMode) {
+                const result = await createGuestReservation(gift.id, guestName, contact);
+                navigate("guest-status", `?token=${encodeURIComponent(result.guest_token)}`);
+                return;
+              }
               const activity = {
                 id: crypto.randomUUID(),
                 registryId: currentRegistry.id,
@@ -681,19 +950,18 @@ function App() {
             }}
           />
         )}
-        {screen === "contribute" && remoteMode && (
-          <FeatureComingSoon
-            title="Guest contributions are next."
-            description="Reservations and contributions will be enabled after the secure Supabase guest flows are connected."
-            navigate={navigate}
-          />
-        )}
-        {screen === "contribute" && !remoteMode && (
+        {screen === "contribute" && (
           <Contribute
             registry={currentRegistry}
             gift={currentRegistry.gifts.find((gift) => gift.id === selectedGiftId) ?? currentRegistry.gifts[0] ?? null}
             activities={appData.activities}
-            onSubmit={(gift, guestName, contact, amount) => {
+            remoteMode={remoteMode}
+            onSubmit={async (gift, guestName, contact, amount) => {
+              if (remoteMode) {
+                const result = await createGuestPledge(gift.id, amount, guestName, contact);
+                navigate("guest-status", `?token=${encodeURIComponent(result.guest_token)}`);
+                return;
+              }
               const activity = {
                 id: crypto.randomUUID(),
                 registryId: currentRegistry.id,
@@ -710,14 +978,51 @@ function App() {
             }}
           />
         )}
-        {screen === "guest-status" && (
+        {screen === "guest-status" && remoteMode && (
+          <GuestStatus
+            navigate={navigate}
+            activity={remoteGuestActivity}
+            registry={selectedGuestRegistry ?? { ...currentRegistry, slug: "" }}
+            loading={guestStatusLoading}
+            error={guestStatusError}
+            remoteMode
+            onCopyLink={() => copyLink(window.location.href)}
+            onCancelReservation={async () => {
+              if (!guestToken) throw new Error("This private status link is missing a valid access token.");
+              await cancelGuestReservation(guestToken);
+              setRemoteGuestActivity(await getGuestActivity(guestToken));
+            }}
+            onReportPayment={async () => {
+              if (!guestToken) throw new Error("This private status link is missing a valid access token.");
+              await reportGuestPayment(guestToken);
+              setRemoteGuestActivity(await getGuestActivity(guestToken));
+            }}
+          />
+        )}
+        {screen === "guest-status" && !remoteMode && (
           <GuestStatus
             navigate={navigate}
             activity={appData.activities.find((activity) => activity.id === guestActivityId) ?? null}
             registry={currentRegistry}
+            loading={false}
+            error=""
+            remoteMode={false}
           />
         )}
-        {screen === "management" && <Management navigate={navigate} />}
+        {screen === "management" && (
+          <Management
+            navigate={navigate}
+            registry={activeRegistry}
+            activities={managementActivities}
+            remoteMode={remoteMode}
+            loading={managementLoading}
+            error={managementError}
+            onRetry={() => setManagementReload((current) => current + 1)}
+            onReleaseReservation={manageReservation}
+            onReleasePledge={managePledge}
+            onReviewContribution={decideContribution}
+          />
+        )}
       </main>
 
       <footer className="site-footer">
@@ -745,7 +1050,7 @@ function App() {
   );
 }
 
-type Navigate = (screen: Screen) => void;
+type Navigate = (screen: Screen, query?: string) => void;
 
 function Eyebrow({ children }: { children: string }) {
   return <p className="eyebrow">{children}</p>;
@@ -766,25 +1071,6 @@ function PageIntro({
       <h1>{title}</h1>
       <p>{description}</p>
     </div>
-  );
-}
-
-function FeatureComingSoon({
-  title,
-  description,
-  navigate,
-}: {
-  title: string;
-  description: string;
-  navigate: Navigate;
-}) {
-  return (
-    <section className="form-page section-wrap">
-      <div className="form-card">
-        <PageIntro eyebrow="NEXT IMPLEMENTATION STEP" title={title} description={description} />
-        <button className="button button-dark button-wide" onClick={() => navigate("dashboard")}>Back to your dashboard</button>
-      </div>
-    </section>
   );
 }
 
@@ -1014,7 +1300,7 @@ function CreateRegistry({
   backendSession: SupabaseSession | null;
   backendRegistry: RegistryDetails | null;
   onSaveBackendRegistry: (
-    details: Omit<RegistryDetails, "id" | "ownerId" | "ownerEmail" | "isPublished">,
+    details: Omit<RegistryDetails, "id" | "ownerId" | "ownerEmail" | "isPublished" | "gifts" | "categories">,
     existing: RegistryDetails | null,
   ) => Promise<Registry>;
 }) {
@@ -1073,6 +1359,7 @@ function CreateRegistry({
       city: String(form.get("city") ?? "").trim(),
       welcomeMessage: String(form.get("welcomeMessage") ?? "").trim(),
       gifts: existing?.gifts ?? [],
+      categories: existing?.categories ?? [],
     };
     onUpdate((current) => ({
       ...current,
@@ -1110,27 +1397,39 @@ function Dashboard({
   registry,
   activities,
   onCopyLink,
-  onUpdate,
+  onReorderGifts,
   onAddGift,
   onEditGift,
   remoteMode,
   onTogglePublished,
   onEditRegistry,
+  paymentSettings,
+  paymentSettingsLoading,
+  paymentSettingsError,
+  onRetryPaymentSettings,
+  onSavePaymentSettings,
 }: {
   navigate: Navigate;
   registry: Registry | null;
   activities: GuestActivity[];
   onCopyLink: (value: string) => Promise<boolean>;
-  onUpdate: (updater: (current: AppData) => AppData) => void;
+  onReorderGifts: (gifts: Gift[]) => Promise<void>;
   onAddGift: () => void;
   onEditGift: (giftId: string) => void;
   remoteMode: boolean;
   onTogglePublished: (registry: Registry, isPublished: boolean) => Promise<void>;
   onEditRegistry: () => void;
+  paymentSettings: RegistryPaymentSettings | null;
+  paymentSettingsLoading: boolean;
+  paymentSettingsError: string;
+  onRetryPaymentSettings: () => void;
+  onSavePaymentSettings: (settings: RegistryPaymentSettings) => Promise<void>;
 }) {
   const [copyMessage, setCopyMessage] = useState("");
   const [publishMessage, setPublishMessage] = useState("");
   const [publishing, setPublishing] = useState(false);
+  const [reordering, setReordering] = useState(false);
+  const [reorderError, setReorderError] = useState("");
   if (!registry) {
     return (
       <section className="form-page section-wrap">
@@ -1183,31 +1482,37 @@ function Dashboard({
       </div>
       <div className="dashboard-grid">
         <article className="panel">
-          <div className="panel-heading"><div><Eyebrow>YOUR WISHLIST</Eyebrow><h2>A few lovely things</h2></div><button className="text-button" onClick={onAddGift} disabled={remoteMode}>Add a gift +</button></div>
+          <div className="panel-heading"><div><Eyebrow>YOUR WISHLIST</Eyebrow><h2>A few lovely things</h2></div><button className="text-button" onClick={onAddGift}>Add a gift +</button></div>
           {registry.gifts.length ? orderedGifts(registry.gifts).map((gift, index, gifts) => (
             <GiftRow
               key={gift.id}
               gift={gift}
               onEdit={() => onEditGift(gift.id)}
-              onMove={(direction) => {
+              onMove={async (direction) => {
                 const reordered = [...gifts];
                 const nextIndex = index + direction;
                 [reordered[index], reordered[nextIndex]] = [reordered[nextIndex], reordered[index]];
-                onUpdate((current) => ({
-                  ...current,
-                  registries: current.registries.map((item) =>
-                    item.id === registry.id ? { ...item, gifts: withGiftPriorities(reordered) } : item
-                  ),
-                }));
+                setReorderError("");
+                setReordering(true);
+                try {
+                  await onReorderGifts(reordered);
+                } catch (error) {
+                  console.error("Could not save wishlist priority", error);
+                  setReorderError(error instanceof Error ? error.message : "Could not save wishlist priority.");
+                } finally {
+                  setReordering(false);
+                }
               }}
               canMoveUp={index > 0}
               canMoveDown={index < gifts.length - 1}
+              disabled={reordering}
             />
           )) : (
             <div className="empty-list"><p>Your wishlist is empty for now.</p>{remoteMode
-              ? <p>Gift management is the next part we’ll connect to Supabase.</p>
+              ? <p>Add your first gift to start building your wishlist.</p>
               : <button className="text-button" onClick={onAddGift}>Add your first gift <span>→</span></button>}</div>
           )}
+          {reorderError && <p className="form-error" role="alert">{reorderError}</p>}
         </article>
         <aside className="panel share-panel">
           <Eyebrow>YOUR REGISTRY LINK</Eyebrow><h2>Ready to share?</h2>
@@ -1224,15 +1529,208 @@ function Dashboard({
           {copyMessage && <p className={copyMessage === "Link copied!" ? "copy-message" : "form-error"} role="status">{copyMessage}</p>}
           {publishMessage && <p className={publishMessage.startsWith("Registry is") ? "copy-message" : "form-error"} role="status">{publishMessage}</p>}
           <p className="share-link-help">{remoteMode
-            ? "Registry details are stored in Supabase. Gift management and guest actions will be connected next."
+            ? "Registry details, wishlist gifts, and guest activity are stored securely in Supabase."
             : "Preview links use browser-local demo data. Cross-device sharing needs the live Supabase connection."}</p>
+          {remoteMode && <button className="button button-outline button-wide" onClick={() => navigate("management")}>Review guest activity</button>}
           <div className="member-note"><span className="member-avatar">{registry.firstName.slice(0, 1).toUpperCase()}</span><span><b>{registryNames(registry)}</b><small>Registry owner · {registry.ownerEmail}</small></span></div>
         </aside>
       </div>
+      {remoteMode && (
+        <PaymentSettingsForm
+          settings={paymentSettings}
+          loading={paymentSettingsLoading}
+          error={paymentSettingsError}
+          onRetry={onRetryPaymentSettings}
+          onSave={onSavePaymentSettings}
+        />
+      )}
       <p className="prototype-help">{remoteMode
-        ? "Account and wedding details are synced with Supabase; wishlist gifts and guest activity are not connected yet."
+        ? "Account, wedding details, wishlist gifts, payment instructions, and guest activity are synced with Supabase."
         : "Demo data is saved in this browser only. It is not yet synced to Supabase or available on other devices."}</p>
     </section>
+  );
+}
+
+function PaymentSettingsForm({
+  settings,
+  loading,
+  error,
+  onRetry,
+  onSave,
+}: {
+  settings: RegistryPaymentSettings | null;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  onSave: (settings: RegistryPaymentSettings) => Promise<void>;
+}) {
+  const [values, setValues] = useState<RegistryPaymentSettings>({
+    recipients: [],
+    bankAccountName: "",
+    bankAccountNumber: "",
+    bankIfsc: "",
+    cashInstructions: "",
+    generalInstructions: "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    if (settings) setValues(settings);
+  }, [settings]);
+
+  const update = (key: keyof RegistryPaymentSettings, value: string) => {
+    setValues((current) => ({ ...current, [key]: value }));
+    setMessage("");
+  };
+
+  const updateRecipient = (id: string, changes: Partial<RegistryPaymentRecipient>) => {
+    setValues((current) => ({
+      ...current,
+      recipients: current.recipients.map((recipient) =>
+        recipient.id === id ? { ...recipient, ...changes } : recipient
+      ),
+    }));
+    setMessage("");
+  };
+
+  const addRecipient = () => {
+    setValues((current) => ({
+      ...current,
+      recipients: [...current.recipients, {
+        id: crypto.randomUUID(),
+        displayName: "",
+        upiId: "",
+        qrImagePath: null,
+        qrImageUrl: null,
+        qrImageFile: null,
+      }],
+    }));
+    setMessage("");
+  };
+
+  const removeRecipient = (id: string) => {
+    setValues((current) => ({
+      ...current,
+      recipients: current.recipients.filter((recipient) => recipient.id !== id),
+    }));
+    setMessage("");
+  };
+
+  const selectQrImage = (id: string, file?: File) => {
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 5 * 1024 * 1024) {
+      setMessage("Choose a JPEG, PNG, or WebP QR image no larger than 5 MB.");
+      return;
+    }
+    updateRecipient(id, { qrImageFile: file });
+  };
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setMessage("");
+    const bankFieldsPresent = Boolean(values.bankAccountName.trim() || values.bankAccountNumber.trim() || values.bankIfsc.trim());
+    if (bankFieldsPresent && (!values.bankAccountName.trim() || !values.bankAccountNumber.trim())) {
+      setMessage("Enter both the bank account name and account number, or leave both blank.");
+      return;
+    }
+    if (values.bankIfsc.trim() && !/^[A-Z]{4}0[A-Z0-9]{6}$/i.test(values.bankIfsc.trim())) {
+      setMessage("Enter a valid 11-character IFSC code.");
+      return;
+    }
+    if (values.recipients.some((recipient) => !recipient.displayName.trim() || !recipient.upiId.trim())) {
+      setMessage("Enter a name and UPI ID for each payment recipient, or remove the incomplete entry.");
+      return;
+    }
+    if (new Set(values.recipients.map((recipient) => recipient.id)).size !== values.recipients.length) {
+      setMessage("Each payment recipient must have a unique ID. Remove the duplicate entry and add it again.");
+      return;
+    }
+    setSaving(true);
+    void onSave(values)
+      .then(() => setMessage("Payment instructions saved. Published guests can now view these details."))
+      .catch((saveError: unknown) => {
+        console.error("Could not save payment instructions", saveError);
+        setMessage(saveError instanceof Error ? saveError.message : "Could not save payment instructions.");
+      })
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <article className="panel payment-settings-panel">
+      <div className="panel-heading">
+        <div><Eyebrow>OFFLINE PAYMENT</Eyebrow><h2>Payment instructions</h2></div>
+      </div>
+      <p className="payment-settings-intro">Guests pay you directly. Details entered here appear on your published registry; ShaadiLedger never collects or processes payments.</p>
+      {loading && <p role="status">Loading your saved payment instructions...</p>}
+      {error && <div><p className="form-error" role="alert">{error}</p><button className="text-button" onClick={onRetry}>Retry loading instructions</button></div>}
+      {!loading && !error && (
+        <form onSubmit={submit}>
+          <div className="payment-recipients">
+            <div className="payment-recipients-heading">
+              <div><h3>UPI payment options</h3><p>Add the couple's or a family member's UPI ID and QR code.</p></div>
+              <button className="button button-outline" type="button" onClick={addRecipient} disabled={!settings || saving}>Add a person</button>
+            </div>
+            {values.recipients.length === 0 && <p className="share-link-help">No UPI options added yet. Guests can use the bank or cash details below.</p>}
+            {values.recipients.map((recipient, index) => (
+              <fieldset className="payment-recipient" key={recipient.id}>
+                <legend>Person {index + 1}</legend>
+                <label>Name shown to guests
+                  <input value={recipient.displayName} onChange={(event) => updateRecipient(recipient.id, { displayName: event.target.value })} maxLength={100} placeholder="e.g. Maya" autoComplete="name" disabled={!settings || saving} required />
+                </label>
+                <label>UPI ID
+                  <input value={recipient.upiId} onChange={(event) => updateRecipient(recipient.id, { upiId: event.target.value })} maxLength={120} placeholder="name@exampleupi" autoComplete="off" disabled={!settings || saving} required />
+                </label>
+                <label>UPI QR code <span className="optional">(optional · JPEG, PNG, or WebP up to 5 MB)</span>
+                  <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
+                    selectQrImage(recipient.id, event.target.files?.[0]);
+                    event.target.value = "";
+                  }} disabled={!settings || saving} />
+                </label>
+                {recipient.qrImageFile && (
+                  <div className="payment-qr-file">
+                    <span>Selected: {recipient.qrImageFile.name}</span>
+                    <button className="text-button" type="button" onClick={() => updateRecipient(recipient.id, { qrImageFile: null })} disabled={!settings || saving}>Cancel selected QR</button>
+                  </div>
+                )}
+                {recipient.qrImageUrl && !recipient.qrImageFile && (
+                  <div className="payment-qr-preview">
+                    <img src={recipient.qrImageUrl} alt={`${recipient.displayName || "Recipient"} UPI QR code`} />
+                    <button className="text-button" type="button" onClick={() => updateRecipient(recipient.id, { qrImageFile: null, qrImagePath: null, qrImageUrl: null })} disabled={!settings || saving}>Remove QR code</button>
+                  </div>
+                )}
+                {recipient.qrImagePath && !recipient.qrImageUrl && !recipient.qrImageFile && (
+                  <button className="text-button" type="button" onClick={() => updateRecipient(recipient.id, { qrImagePath: null })} disabled={!settings || saving}>Remove QR code</button>
+                )}
+                <button className="text-button payment-recipient-remove" type="button" onClick={() => removeRecipient(recipient.id)} disabled={!settings || saving}>Remove this person</button>
+              </fieldset>
+            ))}
+          </div>
+          <div className="field-row">
+            <label>Bank account name <span className="optional">(optional)</span>
+              <input value={values.bankAccountName} onChange={(event) => update("bankAccountName", event.target.value)} maxLength={160} autoComplete="name" disabled={!settings || saving || loading} />
+            </label>
+            <label>Bank account number <span className="optional">(optional)</span>
+              <input value={values.bankAccountNumber} onChange={(event) => update("bankAccountNumber", event.target.value)} maxLength={64} inputMode="numeric" autoComplete="off" disabled={!settings || saving || loading} />
+            </label>
+          </div>
+          <label>IFSC code <span className="optional">(optional)</span>
+            <input value={values.bankIfsc} onChange={(event) => update("bankIfsc", event.target.value.toUpperCase())} maxLength={11} autoCapitalize="characters" placeholder="ABCD0123456" autoComplete="off" disabled={!settings || saving || loading} />
+          </label>
+          <label>Cash instructions <span className="optional">(optional)</span>
+            <textarea value={values.cashInstructions} onChange={(event) => update("cashInstructions", event.target.value)} maxLength={1000} rows={2} placeholder="How guests can give you cash" disabled={!settings || saving || loading} />
+          </label>
+          <label>Additional instructions <span className="optional">(optional)</span>
+            <textarea value={values.generalInstructions} onChange={(event) => update("generalInstructions", event.target.value)} maxLength={2000} rows={3} placeholder="Add a transfer reference or any other helpful note" disabled={!settings || saving || loading} />
+          </label>
+          {message && <p className={message.startsWith("Payment instructions saved") ? "copy-message" : "form-error"} role="status">{message}</p>}
+          <button className="button button-dark" type="submit" disabled={!settings || saving || loading}>
+            {saving ? "Saving instructions..." : "Save payment instructions"}
+          </button>
+        </form>
+      )}
+      <p className="share-link-help">Bank details, UPI IDs, and QR codes are visible to anyone who can open your published registry. Only share details you have permission to publish.</p>
+    </article>
   );
 }
 
@@ -1256,12 +1754,14 @@ function GiftRow({
   onMove,
   canMoveUp,
   canMoveDown,
+  disabled,
 }: {
   gift: Gift;
   onEdit: () => void;
-  onMove: (direction: -1 | 1) => void;
+  onMove: (direction: -1 | 1) => void | Promise<void>;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  disabled: boolean;
 }) {
   return (
     <div className="gift-row">
@@ -1270,8 +1770,8 @@ function GiftRow({
       <span className="gift-row-price">{money(gift.price)}</span>
       <button type="button" className="text-button gift-edit-button" onClick={onEdit}>Edit</button>
       <div className="gift-priority-actions" aria-label={`${gift.name} priority`}>
-        <button type="button" className="priority-button" aria-label={`Move ${gift.name} up`} disabled={!canMoveUp} onClick={() => onMove(-1)}>↑</button>
-        <button type="button" className="priority-button" aria-label={`Move ${gift.name} down`} disabled={!canMoveDown} onClick={() => onMove(1)}>↓</button>
+        <button type="button" className="priority-button" aria-label={`Move ${gift.name} up`} disabled={!canMoveUp || disabled} onClick={() => onMove(-1)}>↑</button>
+        <button type="button" className="priority-button" aria-label={`Move ${gift.name} down`} disabled={!canMoveDown || disabled} onClick={() => onMove(1)}>↓</button>
       </div>
     </div>
   );
@@ -1282,15 +1782,18 @@ function EditGift({
   registry,
   existingGift,
   activities,
-  onUpdate,
+  remoteMode,
+  onSave,
 }: {
   navigate: Navigate;
   registry: Registry | null;
   existingGift: Gift | null;
   activities: GuestActivity[];
-  onUpdate: (updater: (current: AppData) => AppData) => void;
+  remoteMode: boolean;
+  onSave: (gift: Gift, gifts: Gift[]) => Promise<void>;
 }) {
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const priorityLimit = (registry?.gifts.length ?? 0) + (existingGift ? 0 : 1);
   const initialPriority = existingGift && registry
     ? orderedGifts(registry.gifts).findIndex((item) => item.id === existingGift.id) + 1
@@ -1323,7 +1826,11 @@ function EditGift({
       setError("The gift value cannot be lower than its active reservation or committed contributions.");
       return;
     }
-    const category = String(form.get("category") ?? "For our home");
+    const category = String(form.get("category") ?? "").trim();
+    if (!category || category.length > 80) {
+      setError("Enter a category with 1 to 80 characters.");
+      return;
+    }
     const emojis: Record<string, string> = {
       "For our home": "🏡",
       "Our next adventure": "✈️",
@@ -1339,22 +1846,29 @@ function EditGift({
       link: productLink,
       priority,
     };
-    onUpdate((current) => ({
-      ...current,
-      registries: current.registries.map((item) => {
-        if (item.id !== registry.id) return item;
-        const existingGifts = orderedGifts(item.gifts.filter((itemGift) => itemGift.id !== gift.id));
-        return {
-          ...item,
-          gifts: withGiftPriorities([
-            ...existingGifts.slice(0, priority - 1),
-            gift,
-            ...existingGifts.slice(priority - 1),
-          ]),
-        };
-      }),
-    }));
-    navigate("dashboard");
+    const existingGifts = orderedGifts(registry.gifts.filter((itemGift) => itemGift.id !== gift.id));
+    const gifts = withGiftPriorities([
+      ...existingGifts.slice(0, priority - 1),
+      gift,
+      ...existingGifts.slice(priority - 1),
+    ]);
+    const savingRequest = onSave(gift, gifts);
+    if (!remoteMode) {
+      void savingRequest.catch((saveError: unknown) => {
+        console.error("Could not save wishlist gift", saveError);
+        setError(saveError instanceof Error ? saveError.message : "Could not save this gift.");
+      });
+      navigate("dashboard");
+      return;
+    }
+    setSaving(true);
+    void savingRequest
+      .then(() => navigate("dashboard"))
+      .catch((saveError: unknown) => {
+        console.error("Could not save wishlist gift to Supabase", saveError);
+        setError(saveError instanceof Error ? saveError.message : "Could not save this gift.");
+      })
+      .finally(() => setSaving(false));
   };
 
   return (
@@ -1366,7 +1880,11 @@ function EditGift({
           <label>What makes it special? <span className="optional">(optional)</span><textarea name="description" defaultValue={existingGift?.description} rows={3} placeholder="Add a note for your guests..." /></label>
           <div className="field-row">
             <label>Gift value<input name="price" type="number" min="1" step="0.01" defaultValue={existingGift?.price} placeholder="e.g. 18500" required /></label>
-            <label>Category<select name="category" defaultValue={existingGift?.category ?? "For our home"}><option>For our home</option><option>Our next adventure</option><option>Something meaningful</option></select></label>
+            <label>Category<input name="category" list="gift-category-options" defaultValue={existingGift?.category ?? (registry?.categories ?? [])[0] ?? "For our home"} placeholder="e.g. For our home" required />
+              <datalist id="gift-category-options">
+                {[...new Set(["For our home", "Our next adventure", "Something meaningful", ...(registry?.categories ?? [])])].map((category) => <option key={category} value={category} />)}
+              </datalist>
+            </label>
           </div>
           <div className="field-row">
             <label>Wishlist priority<select name="priority" defaultValue={String(initialPriority)}>
@@ -1376,10 +1894,10 @@ function EditGift({
           <label>Product link <span className="optional">(optional)</span><input name="link" type="url" defaultValue={existingGift?.link} placeholder="https://shop.example.com/gift" /></label>
           <p className="field-note">The gift thumbnail uses the store icon from this product link.</p>
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="button button-dark button-wide" type="submit">{existingGift ? "Save gift changes" : "Add gift to wishlist"} <span aria-hidden="true">↗</span></button>
+          <button className="button button-dark button-wide" type="submit" disabled={saving}>{saving ? "Saving..." : existingGift ? "Save gift changes" : "Add gift to wishlist"} <span aria-hidden="true">↗</span></button>
           <button className="text-button" type="button" onClick={() => navigate("dashboard")}>Back to dashboard</button>
         </form>
-        <p className="prototype-help">Guest contribution choices are shown on the public wishlist. Demo gifts are saved in this browser only.</p>
+        <p className="prototype-help">{remoteMode ? "Gift details, categories, and priority are saved to Supabase." : "Guest contribution choices are shown on the public wishlist. Demo gifts are saved in this browser only."}</p>
       </div>
     </section>
   );
@@ -1438,7 +1956,7 @@ function PublicRegistry({
         <div className="section-heading wishlist-heading">
           <div><Eyebrow>A FEW THINGS WE'RE DREAMING OF</Eyebrow><h2>Our little <em>wishlist.</em></h2></div>
           <p>{remoteMode
-            ? "This registry is connected. Guest reservations and contributions will be enabled in the next step."
+            ? "Choose whether to reserve a gift in full or contribute any amount. Pay the couple directly."
             : "Choose how you would like to celebrate: reserve the whole gift or contribute any amount."}</p>
         </div>
         {registry.gifts.length ? (
@@ -1448,8 +1966,16 @@ function PublicRegistry({
                 activity.registryId === registry.id && activity.giftId === gift.id &&
                 ["reserved", "pledged", "payment_reported", "verified"].includes(activity.status)
               );
-              const reserved = giftActivities.some((activity) => activity.kind === "reservation" && activity.status === "reserved");
-              const committed = giftActivities.reduce((total, activity) => total + activity.amount, 0);
+              const reserved = remoteMode
+                ? gift.isReserved === true
+                : giftActivities.some((activity) => activity.kind === "reservation" && activity.status === "reserved");
+              const committed = remoteMode
+                ? gift.committedAmount ?? 0
+                : giftActivities.reduce((total, activity) => total + activity.amount, 0);
+              const verified = remoteMode
+                ? gift.verifiedAmount ?? 0
+                : giftActivities.filter((activity) => activity.kind === "contribution" && activity.status === "verified")
+                  .reduce((total, activity) => total + activity.amount, 0);
               const remaining = Math.max(0, gift.price - committed);
               const unavailable = reserved || remaining === 0;
               const productUrl = getExternalUrl(gift.link);
@@ -1465,15 +1991,16 @@ function PublicRegistry({
                     {productUrl && <a className="product-link" href={productUrl} target="_blank" rel="noopener noreferrer">View gift online <span aria-hidden="true">↗</span></a>}
                   {reserved && <p className="availability-note">Already reserved by a guest.</p>}
                   {!reserved && committed > 0 && <p className="availability-note">{money(remaining)} remaining for contributions.</p>}
+                  {!reserved && committed > 0 && <p className="availability-note">{money(verified)} verified so far.</p>}
                   <div className="guest-gift-actions">
-                    <button className="button button-outline button-wide" disabled={remoteMode || unavailable || committed > 0} onClick={() => {
+                    <button className="button button-outline button-wide" disabled={unavailable || committed > 0} onClick={() => {
                       onChooseGift(gift.id);
                       navigate("reserve-gift");
-                    }}>{remoteMode ? "Coming soon" : reserved ? "Reserved" : committed > 0 ? "Contributions started" : "Reserve this gift"}</button>
-                    <button className="text-button card-link" disabled={remoteMode || unavailable} onClick={() => {
+                    }}>{reserved ? "Reserved" : committed > 0 ? "Contributions started" : "Reserve this gift"}</button>
+                    <button className="text-button card-link" disabled={unavailable} onClick={() => {
                       onChooseGift(gift.id);
                       navigate("contribute");
-                    }}>{remoteMode ? "Guest actions coming soon" : reserved ? "Already reserved" : remaining === 0 ? "Fully contributed" : "Contribute any amount"} <span aria-hidden="true">→</span></button>
+                    }}>{reserved ? "Already reserved" : remaining === 0 ? "Fully contributed" : "Contribute any amount"} <span aria-hidden="true">→</span></button>
                   </div>
                 </div>
               </article>
@@ -1493,21 +2020,28 @@ function ReserveGift({
   registry,
   gift,
   activities,
+  remoteMode,
   onSubmit,
 }: {
   registry: Registry;
   gift: Gift | null;
   activities: GuestActivity[];
-  onSubmit: (gift: Gift, guestName: string, contact: string) => void;
+  remoteMode: boolean;
+  onSubmit: (gift: Gift, guestName: string, contact: string) => void | Promise<void>;
 }) {
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const productUrl = gift ? getExternalUrl(gift.link) : null;
   const giftActivities = activities.filter((activity) =>
     activity.registryId === registry.id && activity.giftId === gift?.id &&
     ["reserved", "pledged", "payment_reported", "verified"].includes(activity.status)
   );
-  const hasReservation = giftActivities.some((activity) => activity.kind === "reservation" && activity.status === "reserved");
-  const hasContributions = giftActivities.some((activity) => activity.kind === "contribution");
+  const hasReservation = remoteMode
+    ? gift?.isReserved === true
+    : giftActivities.some((activity) => activity.kind === "reservation" && activity.status === "reserved");
+  const hasContributions = remoteMode
+    ? (gift?.committedAmount ?? 0) > 0
+    : giftActivities.some((activity) => activity.kind === "contribution");
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!gift) {
@@ -1527,7 +2061,16 @@ function ReserveGift({
       setError("Enter your name and a valid email address or phone number.");
       return;
     }
-    onSubmit(gift, guestName, contact);
+    setError("");
+    const request = onSubmit(gift, guestName, contact);
+    if (remoteMode) {
+      setSaving(true);
+      void Promise.resolve(request)
+        .catch((submitError: unknown) => {
+          setError(submitError instanceof Error ? submitError.message : "Could not reserve this gift. Please try again.");
+        })
+        .finally(() => setSaving(false));
+    }
   };
 
   return (
@@ -1549,13 +2092,13 @@ function ReserveGift({
           <label>Your name<input name="guestName" placeholder="Name the couple will recognize" autoComplete="name" required /></label>
           <label>Email or phone number<input name="contact" type="text" placeholder="you@example.com or +91 98765 43210" autoComplete="email" required /></label>
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="button button-dark button-wide" type="submit" disabled={!gift || hasReservation || hasContributions}>
-            {hasReservation ? "Already reserved" : hasContributions ? "Contributions started" : "Reserve this gift"} <span aria-hidden="true">↗</span>
+          <button className="button button-dark button-wide" type="submit" disabled={!gift || hasReservation || hasContributions || saving}>
+            {saving ? "Reserving..." : hasReservation ? "Already reserved" : hasContributions ? "Contributions started" : "Reserve this gift"} <span aria-hidden="true">↗</span>
           </button>
         </form>
         <p className="form-footnote">The couple will see your name and contact details. They can release a reservation if needed.</p>
         <p className="form-footnote"><a href={getRegistryLink(registry)}>Back to the couple's wishlist</a></p>
-        <p className="prototype-help">Demo reservation is saved in this browser only.</p>
+        <p className="prototype-help">{remoteMode ? "Your reservation is saved securely, and the couple can see your name and contact details." : "Demo reservation is saved in this browser only."}</p>
       </div>
     </section>
   );
@@ -1565,28 +2108,38 @@ function Contribute({
   registry,
   gift,
   activities,
+  remoteMode,
   onSubmit,
 }: {
   registry: Registry;
   gift: Gift | null;
   activities: GuestActivity[];
-  onSubmit: (gift: Gift, guestName: string, contact: string, amount: number) => void;
+  remoteMode: boolean;
+  onSubmit: (gift: Gift, guestName: string, contact: string, amount: number) => void | Promise<void>;
 }) {
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const productUrl = gift ? getExternalUrl(gift.link) : null;
   const giftActivities = activities.filter((activity) =>
     activity.registryId === registry.id && activity.giftId === gift?.id &&
     activity.kind === "contribution" && ["pledged", "payment_reported", "verified"].includes(activity.status)
   );
-  const hasReservation = activities.some((activity) =>
-    activity.registryId === registry.id && activity.giftId === gift?.id &&
-    activity.kind === "reservation" && activity.status === "reserved"
-  );
-  const contributed = giftActivities
-    .filter((activity) => activity.status === "verified")
-    .reduce((total, activity) => total + activity.amount, 0);
-  const committed = giftActivities.reduce((total, activity) => total + activity.amount, 0);
+  const hasReservation = remoteMode
+    ? gift?.isReserved === true
+    : activities.some((activity) =>
+      activity.registryId === registry.id && activity.giftId === gift?.id &&
+      activity.kind === "reservation" && activity.status === "reserved"
+    );
+  const contributed = remoteMode
+    ? gift?.verifiedAmount ?? 0
+    : giftActivities
+      .filter((activity) => activity.status === "verified")
+      .reduce((total, activity) => total + activity.amount, 0);
+  const committed = remoteMode
+    ? gift?.committedAmount ?? 0
+    : giftActivities.reduce((total, activity) => total + activity.amount, 0);
   const remaining = hasReservation ? 0 : Math.max(0, (gift?.price ?? 0) - committed);
+  const paymentInstructions = registry.paymentInstructions;
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!gift) {
@@ -1609,7 +2162,16 @@ function Contribute({
       setError("That amount is more than the remaining gift value.");
       return;
     }
-    onSubmit(gift, guestName, contact, amount);
+    setError("");
+    const request = onSubmit(gift, guestName, contact, amount);
+    if (remoteMode) {
+      setSaving(true);
+      void Promise.resolve(request)
+        .catch((submitError: unknown) => {
+          setError(submitError instanceof Error ? submitError.message : "Could not create this contribution. Please try again.");
+        })
+        .finally(() => setSaving(false));
+    }
   };
 
   return (
@@ -1633,12 +2195,39 @@ function Contribute({
             <label>Your name<input name="guestName" placeholder="Name the couple will recognize" required /></label>
           </div>
           <label>Email or phone number<input name="contact" placeholder="Enter one contact method" autoComplete="email" required /></label>
-          <div className="payment-instructions"><Eyebrow>PAY THE COUPLE DIRECTLY</Eyebrow><p>After pledging, use the couple's UPI, bank transfer, or cash instructions. ShaadiLedger does not collect or process payment.</p><span>UPI details are shown in the couple's published instructions.</span></div>
+          <div className="payment-instructions">
+            <Eyebrow>PAY THE COUPLE OR FAMILY DIRECTLY</Eyebrow>
+            <p>After pledging, use one of the payment options below. ShaadiLedger does not collect or process payment.</p>
+            {paymentInstructions ? (
+              <div className="status-summary">
+                {paymentInstructions.payment_recipients.map((recipient) => (
+                  <section className="guest-payment-recipient" key={recipient.id}>
+                    <b>{recipient.display_name}</b>
+                    <span>UPI ID</span>
+                    <b>{recipient.upi_id}</b>
+                    {recipient.qr_image_url && (
+                      <img src={recipient.qr_image_url} alt={`${recipient.display_name} UPI QR code`} loading="lazy" />
+                    )}
+                  </section>
+                ))}
+                {paymentInstructions.bank_account_name && <><span>Account name</span><b>{paymentInstructions.bank_account_name}</b></>}
+                {paymentInstructions.bank_account_number && <><span>Account number</span><b>{paymentInstructions.bank_account_number}</b></>}
+                {paymentInstructions.bank_ifsc && <><span>IFSC</span><b>{paymentInstructions.bank_ifsc}</b></>}
+                {paymentInstructions.cash_instructions && <><span>Cash</span><b>{paymentInstructions.cash_instructions}</b></>}
+                {paymentInstructions.general_instructions && <><span>More details</span><b>{paymentInstructions.general_instructions}</b></>}
+                {!paymentInstructions.payment_recipients.length && !paymentInstructions.bank_account_name && !paymentInstructions.bank_account_number &&
+                  !paymentInstructions.cash_instructions && !paymentInstructions.general_instructions &&
+                  <span>The couple has not added payment instructions yet. Please contact them before paying.</span>}
+              </div>
+            ) : <span>The couple has not added payment instructions yet. Please contact them before paying.</span>}
+          </div>
           {error && <p className="form-error" role="alert">{error}</p>}
-          <button className="button button-dark button-wide" type="submit" disabled={!gift || hasReservation || remaining === 0}>Continue with contribution <span aria-hidden="true">↗</span></button>
+          <button className="button button-dark button-wide" type="submit" disabled={!gift || hasReservation || remaining === 0 || saving}>
+            {saving ? "Creating contribution..." : "Continue with contribution"} <span aria-hidden="true">↗</span>
+          </button>
         </form>
         <p className="form-footnote"><a href={getRegistryLink(registry)}>Back to the couple's wishlist</a></p>
-        <p className="prototype-help">Demo pledge is saved in this browser only. Only couple-verified contributions count as received.</p>
+        <p className="prototype-help">{remoteMode ? "Only contributions verified by the couple count as received." : "Demo pledge is saved in this browser only. Only couple-verified contributions count as received."}</p>
       </div>
     </section>
   );
@@ -1648,54 +2237,270 @@ function GuestStatus({
   navigate,
   activity,
   registry,
+  loading,
+  error,
+  remoteMode,
+  onCopyLink,
+  onCancelReservation,
+  onReportPayment,
 }: {
   navigate: Navigate;
-  activity: GuestActivity | null;
+  activity: GuestActivity | GuestActivityDetails | null;
   registry: Registry;
+  loading: boolean;
+  error: string;
+  remoteMode: boolean;
+  onCopyLink?: () => Promise<boolean>;
+  onCancelReservation?: () => Promise<void>;
+  onReportPayment?: () => Promise<void>;
 }) {
-  const gift = registry.gifts.find((item) => item.id === activity?.giftId);
+  const [actionError, setActionError] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const remoteActivity = activity && "giftName" in activity;
+  const giftName = remoteActivity
+    ? activity.giftName
+    : activity ? registry.gifts.find((item) => item.id === activity.giftId)?.name ?? "Registry gift" : null;
+  const coupleNames = remoteActivity ? activity.coupleNames : registryNames(registry);
+  const amount = activity && "amount" in activity && typeof activity.amount === "number" ? activity.amount : null;
+  const statusLabels: Record<GuestActivity["status"], string> = {
+    reserved: "Reserved",
+    cancelled: "Reservation cancelled",
+    released: "Released",
+    pledged: "Contribution pledged",
+    payment_reported: "Payment reported",
+    verified: "Verified",
+    rejected: "Rejected",
+    expired: "Expired",
+  };
+  const statusLabel = activity ? statusLabels[activity.status] : "";
+  const canCancelReservation = remoteMode && activity?.kind === "reservation" && activity.status === "reserved";
+  const canReportPayment = remoteMode && activity?.kind === "contribution" &&
+    (activity.status === "pledged" || activity.status === "rejected");
+  const performAction = (action: (() => Promise<void>) | undefined) => {
+    if (!action) return;
+    setActionError("");
+    setActionLoading(true);
+    void action()
+      .catch((actionError: unknown) => {
+        setActionError(actionError instanceof Error ? actionError.message : "This action could not be completed. Please try again.");
+      })
+      .finally(() => setActionLoading(false));
+  };
+  const copyPrivateLink = async () => {
+    if (!onCopyLink) return;
+    const copied = await onCopyLink();
+    setLinkCopied(copied);
+  };
   return (
     <section className="form-page section-wrap">
       <div className="form-card status-card">
         <span className="status-icon">♡</span>
         <Eyebrow>YOUR PRIVATE GUEST LINK</Eyebrow>
         <h1>Your gift, with love.</h1>
-        <p className="status-description">This page shows the demo status for the gift you chose.</p>
+        <p className="status-description">{remoteMode
+          ? "This private link lets you check or update the status of your gift without creating an account."
+          : "This page shows the demo status for the gift you chose."}</p>
+        {loading && <p role="status">Loading your secure guest status...</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
         {activity ? (
           <div className="status-summary">
-            <span>Gift</span><b>{gift?.name ?? "Registry gift"}</b>
-            <span>Action</span><b className="status-pill">{activity.kind === "reservation" ? "Reserved" : "Contribution pledged"}</b>
-            {activity.kind === "contribution" && <><span>Amount</span><b>{money(activity.amount)}</b></>}
-            <span>Your name</span><b>{activity.guestName}</b>
+            <span>Gift</span><b>{giftName}</b>
+            <span>Action</span><b className="status-pill">{statusLabel}</b>
+            {amount !== null && <><span>Amount</span><b>{money(amount)}</b></>}
+            {activity.kind === "contribution" && "expiresAt" in activity && activity.expiresAt &&
+              <><span>Pledge expires</span><b>{new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(activity.expiresAt))}</b></>}
+            {!remoteMode && activity && "guestName" in activity && <><span>Your name</span><b>{activity.guestName}</b></>}
           </div>
-        ) : <p className="empty-list">No recent demo activity is available in this browser.</p>}
-        <p className="form-footnote">{registryNames(registry)} can see your name and contact details. Any money is paid directly to the couple, outside ShaadiLedger.</p>
-        <button className="button button-outline button-wide" onClick={() => navigate("public-registry")}>Back to their registry</button>
-        <p className="prototype-help">Example reservation and contribution statuses only; this private-link flow is not connected.</p>
+        ) : !loading && !error ? <p className="empty-list">No recent demo activity is available in this browser.</p> : null}
+        {remoteMode && activity && (
+          <>
+            <p className="form-footnote">{coupleNames} can see your name and contact details. Any money is paid directly to the couple, outside ShaadiLedger.</p>
+            {activity.kind === "contribution" && activity.status === "payment_reported" &&
+              <p className="availability-note">Payment reported. The couple will update this status after checking their account.</p>}
+            {activity.kind === "contribution" && activity.status === "verified" &&
+              <p className="availability-note">The couple verified your contribution. Thank you!</p>}
+            {canCancelReservation && <button className="button button-outline button-wide" disabled={actionLoading} onClick={() => performAction(onCancelReservation)}>
+              {actionLoading ? "Cancelling..." : "Cancel this reservation"}
+            </button>}
+            {canReportPayment && <button className="button button-dark button-wide" disabled={actionLoading} onClick={() => performAction(onReportPayment)}>
+              {actionLoading ? "Reporting..." : activity.status === "rejected" ? "Report payment again" : "I've paid — report payment"}
+            </button>}
+            {actionError && <p className="form-error" role="alert">{actionError}</p>}
+            <button className="button button-outline button-wide" onClick={() => void copyPrivateLink()}>
+              {linkCopied ? "Private link copied" : "Copy private status link"}
+            </button>
+            {linkCopied === false && <p className="form-footnote">Keep this link private; anyone with it can view this activity.</p>}
+          </>
+        )}
+        {registry.slug && <button className="button button-outline button-wide" onClick={() => navigate(
+          "public-registry",
+          remoteMode ? `?slug=${encodeURIComponent(registry.slug)}` : "",
+        )}>Back to their registry</button>}
+        {!remoteMode && <p className="form-footnote">{registryNames(registry)} can see your name and contact details. Any money is paid directly to the couple, outside ShaadiLedger.</p>}
+        {!remoteMode && <p className="prototype-help">Example reservation and contribution statuses are saved in this browser only.</p>}
       </div>
     </section>
   );
 }
 
-function Management({ navigate }: { navigate: Navigate }) {
+function Management({
+  navigate,
+  registry,
+  activities,
+  remoteMode,
+  loading,
+  error,
+  onRetry,
+  onReleaseReservation,
+  onReleasePledge,
+  onReviewContribution,
+}: {
+  navigate: Navigate;
+  registry: Registry | null;
+  activities: RegistryManagementActivity[];
+  remoteMode: boolean;
+  loading: boolean;
+  error: string;
+  onRetry: () => void;
+  onReleaseReservation: (reservationId: string) => Promise<void>;
+  onReleasePledge: (contributionId: string) => Promise<void>;
+  onReviewContribution: (contributionId: string, decision: "verified" | "rejected", reason: string) => Promise<void>;
+}) {
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState("");
+  const [rejectionReasons, setRejectionReasons] = useState<Record<string, string>>({});
+  const reservations = activities.filter((activity) => activity.kind === "reservation");
+  const contributions = activities.filter((activity) => activity.kind === "contribution");
+  const pendingReports = contributions.filter((activity) => activity.status === "payment_reported");
+  const pledges = contributions.filter((activity) =>
+    activity.status === "pledged" && (!activity.expiresAt || new Date(activity.expiresAt).getTime() > Date.now())
+  );
+  const giftName = (giftId: string) => registry?.gifts.find((gift) => gift.id === giftId)?.name ?? "Registry gift";
+  const contactDetails = (activity: RegistryManagementActivity) =>
+    activity.email ?? activity.phone ?? "Contact unavailable";
+  const runAction = (
+    activityId: string,
+    action: () => Promise<void>,
+    confirmation: string,
+  ) => {
+    if (!window.confirm(confirmation)) return;
+    setActionError("");
+    setBusyId(activityId);
+    void action()
+      .catch((actionError: unknown) => {
+        console.error("Could not update guest activity", actionError);
+        setActionError(actionError instanceof Error ? actionError.message : "The activity could not be updated. Refresh and try again.");
+      })
+      .finally(() => setBusyId(null));
+  };
+  if (remoteMode && (!registry || loading || error)) {
+    return (
+      <section className="dashboard-page section-wrap">
+        <PageIntro eyebrow="REGISTRY MANAGEMENT" title="A little love, coming in." description="Reservations and payment reports are visible to verified registry members only." />
+        {!registry && !loading && <div className="empty-list"><p>Sign in and create a registry to review guest activity.</p></div>}
+        {loading && <p role="status">Loading reservations and payment reports...</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
+        {error && registry && <button className="button button-outline" onClick={onRetry}>Reload activity</button>}
+        <button className="text-button" onClick={() => navigate("dashboard")}>← Back to dashboard</button>
+      </section>
+    );
+  }
   return (
     <section className="dashboard-page section-wrap">
       <PageIntro eyebrow="REGISTRY MANAGEMENT" title="A little love, coming in." description="Reservations and payment reports are visible to verified registry members only." />
+      {remoteMode && (
+        <div className="dashboard-actions">
+          <span className="count-pill">{reservations.length} active reservations</span>
+          <span className="count-pill">{pendingReports.length} payment reports</span>
+          <span className="count-pill">{pledges.length} unpaid pledges</span>
+        </div>
+      )}
       <div className="dashboard-grid management-grid">
         <article className="panel">
-          <div className="panel-heading"><div><Eyebrow>GIFT RESERVATIONS</Eyebrow><h2>Chosen with love</h2></div><span className="count-pill">3 reserved</span></div>
-          <div className="management-row"><span className="gift-thumb">🪑</span><span className="gift-row-copy"><b>A little reading nook</b><small>Reserved by Rohan · 2 days ago</small></span><button className="button button-outline button-small">Release</button></div>
-          <div className="management-row"><span className="gift-thumb">🍽️</span><span className="gift-row-copy"><b>Dinnerware for two</b><small>Reserved by Meera · Yesterday</small></span><button className="button button-outline button-small">Release</button></div>
+          <div className="panel-heading"><div><Eyebrow>GIFT RESERVATIONS</Eyebrow><h2>Chosen with love</h2></div>{remoteMode && <span className="count-pill">{reservations.length} active</span>}</div>
+          {remoteMode ? reservations.length ? reservations.map((activity) => (
+            <div className="management-row" key={activity.id}>
+              <span className="gift-thumb">♡</span>
+              <span className="gift-row-copy">
+                <b>{giftName(activity.giftId)}</b>
+                <small>Reserved by {activity.guestName} · {contactDetails(activity)}</small>
+                <small>{new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" }).format(new Date(activity.createdAt))}</small>
+              </span>
+              <button className="button button-outline button-small" disabled={busyId === activity.id} onClick={() => runAction(
+                activity.id,
+                () => onReleaseReservation(activity.id),
+                `Release ${giftName(activity.giftId)} reserved by ${activity.guestName}? The gift will become available again.`,
+              )}>{busyId === activity.id ? "Releasing..." : "Release"}</button>
+            </div>
+          )) : <div className="empty-list"><p>No active reservations.</p></div>
+            : <>
+              <div className="management-row"><span className="gift-thumb">🪑</span><span className="gift-row-copy"><b>A little reading nook</b><small>Reserved by Rohan · 2 days ago</small></span><button className="button button-outline button-small">Release</button></div>
+              <div className="management-row"><span className="gift-thumb">🍽️</span><span className="gift-row-copy"><b>Dinnerware for two</b><small>Reserved by Meera · Yesterday</small></span><button className="button button-outline button-small">Release</button></div>
+            </>}
         </article>
         <article className="panel">
-          <div className="panel-heading"><div><Eyebrow>PAYMENT REPORTED</Eyebrow><h2>Ready for a check-in</h2></div><span className="count-pill">2 to review</span></div>
-          <div className="management-row"><span className="gift-thumb">🏝️</span><span className="gift-row-copy"><b>Ananya · ₹2,000</b><small>Weekend by the sea · Today</small></span><button className="text-button">Review →</button></div>
-          <div className="management-row"><span className="gift-thumb">🏝️</span><span className="gift-row-copy"><b>Kabir · ₹5,000</b><small>Weekend by the sea · Yesterday</small></span><button className="text-button">Review →</button></div>
+          <div className="panel-heading"><div><Eyebrow>PAYMENT REPORTED</Eyebrow><h2>Ready for a check-in</h2></div>{remoteMode && <span className="count-pill">{pendingReports.length} to review</span>}</div>
+          {remoteMode ? pendingReports.length ? pendingReports.map((activity) => (
+            <div className="management-row" key={activity.id}>
+              <span className="gift-thumb">♡</span>
+              <span className="gift-row-copy">
+                <b>{activity.guestName} · {money(activity.amount ?? 0)}</b>
+                <small>{giftName(activity.giftId)} · {contactDetails(activity)}</small>
+                <small>Reported {activity.paymentReportedAt
+                  ? new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(activity.paymentReportedAt))
+                  : new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" }).format(new Date(activity.createdAt))}</small>
+                <label className="management-rejection-reason">Rejection note (optional)
+                  <input value={rejectionReasons[activity.id] ?? ""} maxLength={500} onChange={(event) =>
+                    setRejectionReasons((current) => ({ ...current, [activity.id]: event.target.value }))
+                  } placeholder="Explain what the guest should check" />
+                </label>
+              </span>
+              <div className="management-actions">
+                <button className="button button-dark button-small" disabled={busyId === activity.id} onClick={() => runAction(
+                  activity.id,
+                  () => onReviewContribution(activity.id, "verified", ""),
+                  `Confirm that you received ${money(activity.amount ?? 0)} from ${activity.guestName}?`,
+                )}>{busyId === activity.id ? "Saving..." : "Verify"}</button>
+                <button className="button button-outline button-small" disabled={busyId === activity.id} onClick={() => runAction(
+                  activity.id,
+                  () => onReviewContribution(activity.id, "rejected", rejectionReasons[activity.id] ?? ""),
+                  `Reject this payment report from ${activity.guestName}? They will be able to report payment again.`,
+                )}>Reject</button>
+              </div>
+            </div>
+          )) : <div className="empty-list"><p>No payment reports need review.</p></div>
+            : <>
+              <div className="management-row"><span className="gift-thumb">🏝️</span><span className="gift-row-copy"><b>Ananya · ₹2,000</b><small>Weekend by the sea · Today</small></span><button className="text-button">Review →</button></div>
+              <div className="management-row"><span className="gift-thumb">🏝️</span><span className="gift-row-copy"><b>Kabir · ₹5,000</b><small>Weekend by the sea · Yesterday</small></span><button className="text-button">Review →</button></div>
+            </>}
         </article>
       </div>
+      {remoteMode && (
+        <article className="panel management-pledges">
+          <div className="panel-heading"><div><Eyebrow>UNPAID PLEDGES</Eyebrow><h2>Waiting to be paid</h2></div><span className="count-pill">{pledges.length} active</span></div>
+          {pledges.length ? pledges.map((activity) => (
+            <div className="management-row" key={activity.id}>
+              <span className="gift-thumb">♡</span>
+              <span className="gift-row-copy"><b>{activity.guestName} · {money(activity.amount ?? 0)}</b>
+                <small>{giftName(activity.giftId)} · {contactDetails(activity)}</small>
+                <small>{activity.expiresAt
+                  ? `Pledge expires ${new Intl.DateTimeFormat("en-IN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(activity.expiresAt))}`
+                  : "Pledge expiry unavailable"}</small>
+              </span>
+              <button className="button button-outline button-small" disabled={busyId === activity.id} onClick={() => runAction(
+                activity.id,
+                () => onReleasePledge(activity.id),
+                `Release ${money(activity.amount ?? 0)} pledged by ${activity.guestName}? This will free the amount for other guests.`,
+              )}>{busyId === activity.id ? "Releasing..." : "Release pledge"}</button>
+            </div>
+          )) : <div className="empty-list"><p>No unpaid pledges are currently holding capacity.</p></div>}
+        </article>
+      )}
+      {actionError && <p className="form-error" role="alert">{actionError}</p>}
       <div className="notice-card"><span>✳</span><p>Verifying a report updates the collected total. If you reject it, the guest can report the payment again.</p></div>
       <button className="text-button" onClick={() => navigate("dashboard")}>← Back to dashboard</button>
-      <p className="prototype-help">Management actions are not connected. Payment proof is not collected.</p>
+      <p className="prototype-help">{remoteMode ? "Actions are recorded in the registry activity log. Payment proof is not collected." : "Demo management actions are not connected. Payment proof is not collected."}</p>
     </section>
   );
 }

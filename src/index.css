@@ -253,9 +253,30 @@ textarea { resize: vertical; }
 .management-row { min-height: 74px; }
 .management-row .button { padding-inline: 11px; }
 .management-row .text-button { white-space: nowrap; }
+.management-row .management-rejection-reason { display: block; margin-top: 9px; font-size: 10px; }
+.management-rejection-reason input { margin-top: 5px; }
+.management-actions { display: flex; flex-direction: column; gap: 7px; }
+.management-pledges { margin-top: 20px; }
+.payment-settings-panel { margin-top: 24px; }
+.payment-settings-panel form { max-width: 760px; display: grid; gap: 14px; }
+.payment-settings-panel form .field-row { margin: 0; }
+.payment-settings-intro { max-width: 680px; color: #59675d; font-family: var(--serif); font-size: 14px; line-height: 1.5; }
+.payment-recipients { display: grid; gap: 12px; }
+.payment-recipients-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.payment-recipients-heading h3 { margin: 0; color: #47574b; font-family: var(--serif); font-size: 18px; font-weight: 500; }
+.payment-recipients-heading p { margin: 5px 0 0; color: #78857a; font-size: 11px; }
+.payment-recipient { min-width: 0; padding: 16px; border: 1px solid #dce3db; display: grid; gap: 12px; }
+.payment-recipient legend { padding: 0 6px; color: #718078; font-size: 10px; }
+.payment-recipient input[type="file"] { padding: 9px; }
+.payment-recipient-remove { justify-self: start; color: #965e50; }
+.payment-qr-file { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; color: #718078; font-size: 11px; }
+.payment-qr-preview { display: flex; align-items: center; gap: 14px; }
+.payment-qr-preview img { width: 120px; aspect-ratio: 1; object-fit: contain; border: 1px solid #dce3db; border-radius: 6px; background: #fff; }
 .notice-card { display: flex; gap: 13px; align-items: center; margin: 20px 0 16px; padding: 14px 16px; background: #edf0e8; color: #718078; }
 .notice-card > span { color: #ad806e; }
 .notice-card p { margin: 0; font-family: var(--serif); font-size: 13px; line-height: 1.5; }
+.guest-payment-recipient { display: grid; grid-template-columns: 1fr; gap: 6px; padding: 12px 0; border-bottom: 1px solid #e6e9e3; }
+.guest-payment-recipient img { width: min(100%, 220px); margin-top: 6px; padding: 8px; border: 1px solid #dce3db; border-radius: 6px; background: #fff; }
 
 @media (max-width: 760px) {
   .site-header { height: 66px; padding-inline: 22px; }

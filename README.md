@@ -92,13 +92,13 @@ Business statuses (such as `reserved`, `pledged`, `payment_reported`, `verified`
 | 7 | Gift details and reservation | Guest | Reserve a gift in full with name and one contact method. |
 | 8 | Contribution and payment instructions | Guest | Contribute an amount, view offline instructions, and report payment. |
 | 9 | Contribution confirmation and status | Guest | Confirm submission and securely check reservation/contribution status. |
-| 10 | Reservation and contribution management | Couple | Release reservations and review, verify, or reject reports. |
+| 10 | Reservation and contribution management | Couple | Release reservations and unpaid pledges; review, verify, or reject reports. |
 
 The inventory has 10 product areas. Account access is one area with two modes (sign in and create account), not two unrelated experiences. The shared header and footer are persistent site chrome, not separate product screens.
 
 ## UX specification — review draft
 
-This specification describes the intended Phase 1 behavior for the 10 product areas. It is the basis for wireframe review; it does not mean every screen or backend workflow is fully implemented. Without Supabase environment settings, the app uses browser-local demo data. When configured, couple authentication, registry details, publication, and public registry details use Supabase; wishlist and guest workflows remain demo-only until their integration steps are complete.
+This specification describes the intended Phase 1 behavior for the 10 product areas. It is the basis for wireframe review; it does not mean every screen or backend workflow is fully implemented. Without Supabase environment settings, the app uses browser-local demo data. When configured, couple authentication, registry details, gifts, payment-instruction editing, activity management, public registry availability, guest reservations/contributions, and private guest status actions use Supabase.
 
 ### Global navigation and layout
 
@@ -254,11 +254,17 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 - [x] Add the initial SQL migration with RLS policies, atomic guest operations, hashed guest tokens, audit records, and a 72-hour pledge expiry function.
 - [x] Add pgTAP checks for core schema, RLS/grants, and protected guest operations.
 - [x] Add a follow-up constraint migration enforcing one registry per owner; assert it in pgTAP.
-- [ ] Re-run the updated migration and 36 database assertions in an isolated PostgreSQL-compatible test environment with Supabase API stubs.
-- [x] Run the migrations and 36 pgTAP assertions against local Supabase.
+- [ ] Re-run the updated migration and 41 database assertions in an isolated PostgreSQL-compatible test environment with Supabase API stubs.
+- [x] Run the migrations and 47 pgTAP assertions against local Supabase.
+- [x] Connect gift/category save, edit, dashboard reads, and priority order to atomic, membership-protected Supabase operations.
+- [x] Verify public wishlist gift reads and priority order through the safe registry RPC.
 - [x] Schedule stale-pledge expiry every 15 minutes and clean old rate-limit counters daily with `pg_cron`.
 - [x] Add rate-limited Edge Function wrappers for reservation, pledge, cancellation, payment report, and guest-status operations.
 - [x] Run all five Edge Functions through 20 local HTTP integration checks; verify reservation, pledge, status, cancellation, payment report, input/CORS errors, and capacity conflicts.
+- [x] Connect the public wishlist to guest-safe availability, verified/committed totals, and published offline payment instructions.
+- [x] Connect guest reservation and group-pledge creation to the rate-limited Edge Functions.
+- [x] Add private token-link status checks, reservation cancellation, and payment reporting/re-reporting.
+- [x] Connect the couple dashboard to private activity reads under RLS and protected release/verify/reject member operations.
 
 ### 3. Supabase authentication, membership, and registry
 
@@ -269,12 +275,13 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 
 ### 4. Reservations and contributions
 
-- [ ] Enforce atomic exclusive reservation vs contribution mode and guest cancellation/member release.
-- [ ] Add atomic contribution capacity allocation using verified + active pledges + payment-reported totals.
-- [ ] Add 72-hour unpaid-pledge expiry and member-controlled early release.
-- [ ] Add offline payment reporting, member verification/rejection, and rejected-payment resubmission with audit history.
-- [ ] Add random, hashed, expiring, revocable guest tokens and status lookup.
+- [x] Enforce atomic exclusive reservation vs contribution mode and guest cancellation/member release.
+- [x] Add atomic contribution capacity allocation using verified + active pledges + payment-reported totals.
+- [x] Add 72-hour unpaid-pledge expiry and member-controlled early release.
+- [x] Add offline payment reporting, member verification/rejection, and rejected-payment resubmission with audit history.
+- [x] Add random, hashed, expiring, revocable guest tokens and status lookup.
 - [ ] Add in-app notices and essential transactional email.
+- [x] Connect authenticated couple activity reads under RLS and wire member release, verify, and reject controls.
 
 ### 5. Verification and launch
 
@@ -299,7 +306,7 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 
 ## Current implementation status
 
-Without Supabase settings, the app retains its browser-local demo: sign-up/sign-in, registry creation, wishlist gift editing/priority, guest reservation/contribution examples, and link copying. With `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` configured, account sign-up/sign-in, session restoration, registry create/edit, publish/unpublish, and public wedding-detail reads use Supabase Auth and the existing RLS-protected schema. Session tokens are stored in the browser; only the public anon key belongs in frontend configuration. Gift CRUD, guest reservations/contributions, payment verification, and notifications are not yet wired to Supabase, and guest actions are disabled in Supabase mode so the UI does not claim those demo operations are persisted. Public registry reads require the database migration and a published registry. Local Supabase migrations and all 36 pgTAP assertions pass; Deno validation and 20 local HTTP integration checks across all five guest Edge Functions also pass. Docker Desktop was reinstalled and its Engine now runs successfully. The [developer guide](./PROJECT_GUIDE.md) records the current status. No remote Supabase project has been configured.
+Without Supabase settings, the app retains its browser-local demo: sign-up/sign-in, registry creation, wishlist gift editing/priority, guest reservation/contribution examples, and link copying. With `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` configured, account sign-up/sign-in, session restoration, registry create/edit, publish/unpublish, gift/category management, priority persistence, payment-instruction editing, multiple named UPI recipients, QR uploads, public availability/payment-instruction reads, guest reservations/contributions, private guest status/cancel/report actions, and couple-side reservation/payment review use Supabase. The existing UPI ID is preserved as the first recipient; QR images are kept in a private bucket and served through 10-minute signed links while a registry is published or to its members. Members can release reservations and unpaid pledges, and verify or reject reported payments; private guest contacts are displayed only in the authenticated management screen. Notifications, gift image uploads, and partner invitation UX remain outstanding. Guest access tokens are carried in the URL fragment and are not stored in localStorage. Validation currently passes 39 frontend tests, the TypeScript/Vite production build, and all 47 local pgTAP assertions. Local checks verified private QR upload, multi-recipient save, signed image access for a published registry, and denial of new signing requests after unpublishing. Earlier disposable test accounts and records were removed; no real payment was made. No remote Supabase project has been configured. The [developer guide](./PROJECT_GUIDE.md) records setup and the current roadmap.
 
 ## Run and test locally
 
@@ -318,7 +325,7 @@ npx supabase test db
 npx supabase functions serve --env-file supabase/functions/.env.local
 ```
 
-The Vitest/Testing Library suite checks the browser-local demo flows. The Deno test covers CORS, request validation, database-backed throttling, and fail-closed behavior. These tests do not substitute for Supabase auth/database, authorization, concurrency, or end-to-end tests. After applying the migration, configure the local Supabase URL and anon key in `.env.local` and restart Vite; do not use the service-role key in the frontend.
+The Vitest/Testing Library suite checks the browser-local demo and mocked Supabase flows. The Deno test covers CORS, request validation, database-backed throttling, and fail-closed behavior. Local browser E2E was also manually exercised against Supabase Auth, PostgREST, and Edge Functions. These checks do not substitute for authorization/concurrency testing or a hosted production smoke test. After applying the migration, configure the local Supabase URL and anon key in `.env.local` and restart Vite; do not use the service-role key in the frontend.
 
 The Supabase migration and database assertions are in `supabase/migrations/` and `supabase/tests/database/`. Run them with the Supabase CLI after installing Docker Desktop or Podman. Do not configure the service-role key in the Vite frontend.
 

@@ -1,13 +1,13 @@
 begin;
 
-select plan(37);
+select plan(47);
 
 select ok(
-  (select count(*) = 13
+  (select count(*) = 14
    from pg_catalog.pg_class c
    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
    where n.nspname = 'public' and c.relkind = 'r'),
-  'all 13 Phase 1 tables exist'
+  'all 14 Phase 1 tables exist'
 );
 
 select ok(
@@ -22,7 +22,7 @@ select ok(
 );
 
 select ok(
-  (select count(*) = 13
+  (select count(*) = 14
    from pg_catalog.pg_class c
    join pg_catalog.pg_namespace n on n.oid = c.relnamespace
    where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity),
@@ -86,6 +86,20 @@ select ok(not has_table_privilege('authenticated', 'public.contributions', 'upda
   'authenticated users cannot bypass contribution state transitions');
 select ok(not has_table_privilege('anon', 'public.payment_settings', 'select'),
   'anonymous users cannot query payment settings directly');
+select ok(not has_table_privilege('anon', 'public.registry_payment_recipients', 'select'),
+  'anonymous users cannot query payment recipients directly');
+select ok(
+  (select not public from storage.buckets where id = 'payment-qrs'),
+  'payment QR images use a private storage bucket'
+);
+select ok(has_function_privilege('anon', 'public.try_uuid(text)', 'execute'),
+  'anonymous storage checks can safely parse registry-scoped QR paths');
+select ok(exists (
+  select 1 from pg_catalog.pg_policies
+  where schemaname = 'storage'
+    and tablename = 'objects'
+    and policyname = 'payment_qrs_select_published_or_member'
+), 'payment QR image access is restricted to published registries and members');
 select ok(not has_table_privilege('anon', 'public.guest_access_tokens', 'select'),
   'anonymous users cannot read guest token hashes');
 select ok(not has_table_privilege('anon', 'private.public_api_rate_limits', 'select'),
@@ -156,6 +170,33 @@ select ok(
    where jobname in ('expire-stale-pledges', 'cleanup-public-api-rate-limits')),
   'pledge expiry and rate-limit cleanup are scheduled'
 );
+
+select ok(has_function_privilege(
+  'authenticated',
+  'public.save_registry_gift(uuid,uuid,text,text,numeric,text,text,uuid[])',
+  'execute'
+), 'authenticated registry members can save gifts through the protected operation');
+select ok(not has_function_privilege(
+  'anon',
+  'public.save_registry_gift(uuid,uuid,text,text,numeric,text,text,uuid[])',
+  'execute'
+), 'anonymous guests cannot save or reorder gifts');
+select ok(has_function_privilege(
+  'authenticated',
+  'public.reorder_registry_gifts(uuid,uuid[])',
+  'execute'
+), 'authenticated registry members can reorder gifts through the protected operation');
+select ok(has_function_privilege(
+  'authenticated', 'public.save_registry_payment_settings(uuid,jsonb,jsonb)', 'execute'
+), 'authenticated registry members can save payment recipients through the protected operation');
+select ok(not has_function_privilege(
+  'anon', 'public.save_registry_payment_settings(uuid,jsonb,jsonb)', 'execute'
+), 'anonymous guests cannot change payment recipients');
+select ok(not has_function_privilege(
+  'anon',
+  'public.reorder_registry_gifts(uuid,uuid[])',
+  'execute'
+), 'anonymous guests cannot directly change wishlist priority');
 
 select * from finish();
 

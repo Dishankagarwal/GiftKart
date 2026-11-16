@@ -2,7 +2,7 @@
 
 > **Audience:** developers, maintainers, and AI coding assistants continuing this repository. Read this file together with `README.md`, the source, migrations, and tests; source code and migrations are authoritative when behavior differs from this summary.
 >
-> **Last reviewed:** 2026-11-13
+> **Last reviewed:** 2026-11-16
 
 ## 1. Product summary
 
@@ -41,7 +41,7 @@ The guiding principles are:
 The project has two runtime modes:
 
 1. **Browser-local demo** (default when no Supabase variables are configured): the existing React UI demonstrates account/registry creation, gift management and priority, guest reservation/contribution examples, and link copying. Data is saved in this browser only and is not authentication or a shared database.
-2. **Supabase mode** (requires both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`): account sign-up/sign-in, session persistence, registry create/edit, publish/unpublish, and public registry detail reads use Supabase. Gift management and guest actions are deliberately gated as “coming next” rather than pretending local demo actions persisted.
+2. **Supabase mode** (requires both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`): account sign-up/sign-in, session persistence, registry create/edit, publish/unpublish, gift/category management, priority ordering, public wishlist availability/payment-instruction reads, and guest reservation/contribution actions use Supabase.
 
 ### Working in Supabase mode
 
@@ -50,17 +50,24 @@ The project has two runtime modes:
 - Browser session storage, restore, refresh when an API request needs a fresh token, and sign-out.
 - Create or edit registry details; creating the row lets the database trigger create its owner membership.
 - Publish/unpublish and fetch a published registry by public slug through the safe database RPC.
-- Local unit tests exist for Supabase auth and registry request mapping.
+- Add/edit gifts and assign categories; gift save and complete priority order are committed atomically through member-authorized database functions.
+- Load saved gift categories and active gifts in the couple dashboard; read published gifts through the restricted public registry RPC.
+- Guests can create full reservations and group pledges through the rate-limited Edge Functions. Availability and verified/committed amounts come from the public registry RPC.
+- Guests can check a reservation or contribution through its private token link, cancel their reservation, and report/re-report an offline payment.
+- Published registries display named UPI recipients, their UPI IDs and uploaded QR codes, plus bank, cash, and general payment instructions when configured.
+- Registry owners can add multiple couple or family UPI recipients, upload or remove QR codes, and edit bank, cash, and general payment instructions from the dashboard. The legacy UPI ID is retained as the first recipient. Recipient changes and payment settings save atomically; private QR images are shared through 10-minute signed URLs only while a registry is published (or with its members).
+- Verified registry members can load guest reservations, pending payment reports, and unpaid pledges under RLS, then release reservations/pledges or verify/reject reported payments through protected member RPCs.
+- The couple dashboard links to activity management. Contact details are shown only inside the authenticated member screen, and consequential actions require confirmation.
+- The private status token is carried only in the URL fragment (`#guest-status?token=...`), not the HTTP path/query, and is not stored in localStorage. Treat the copied link as a bearer secret.
+- Local unit tests cover Supabase auth, registry request mapping, wishlist loading, protected gift writes, payment-settings/recipient reads and writes, QR uploads, and mocked guest reservation/contribution/status flows. The payment-settings UI test checks legacy UPI retention, adding a second named recipient, QR upload, and public QR display.
 
 ### Not yet connected to the frontend
 
-- Gift/category CRUD, priority persistence, and gift image storage.
-- Guest reservation and contribution creation; cancellation, payment reporting, and secure guest status lookups.
-- Couple reservation/reported-payment management, contribution verification/rejection, and early release.
+- Gift image storage/upload.
 - Partner invitation and collaborator UX.
-- Payment-instruction management and notifications.
+- Notifications.
 
-The full database schema and most guest/member operations are already represented in SQL, and guest Edge Function wrappers exist, but this does not mean they have been applied or tested in a live Supabase instance. Supabase mode currently disables guest actions until those UI integrations are completed.
+The guest UI calls service-role-only RPCs through rate-limited Edge Functions; member activity reads use authenticated PostgREST queries under RLS, and member actions use existing authorization-checked RPCs. The UI never exposes guest contacts publicly or calls privileged guest RPCs from the browser. Payment-instruction editing and QR storage use member-only writes, a private storage bucket, and published-registry/member read policies. A local browser E2E run covered account creation, registry and gift setup, payment-instruction editing, publishing, public instructions, group pledge creation, guest payment reporting, and couple rejection. QR upload/display and published-only QR authorization have frontend mocks and database policy assertions; a live storage upload/signed-URL check remains to be run. Disposable accounts and test data from the earlier browser run were removed; no money was transferred or payment verified as received. Hosted Supabase and production browser validation remain outstanding.
 
 ## 3. Product rules and data invariants
 
@@ -75,7 +82,7 @@ The full database schema and most guest/member operations are already represente
 - A guest can cancel their own reservation; registry members may release reservations and unpaid pledges.
 - Only verified registry members may verify/reject contributions or manage a registry.
 - Collect a guest name and exactly one contact field (email or phone); keep guest data private.
-- Guest confirmation tokens are random, hashed at rest, expiring, and revocable. Never put tokens in URLs or logs.
+- Guest confirmation tokens are random, hashed at rest, expiring, and revocable. The bearer token appears only in the private link's URL fragment (never in the HTTP path/query or logs); do not persist it in localStorage.
 - Public registry reads must not expose guest details, reservations, payment reports, or collaborator data.
 - Never expose a Supabase service-role key in the browser or commit credentials.
 
@@ -87,8 +94,8 @@ The full database schema and most guest/member operations are already represente
 - `src/App.tsx` contains hash-based routes, the browser-local demo model, the current Supabase-mode orchestration, forms, and screen components.
 - `src/services/supabase.ts` contains the browser's Supabase Auth and PostgREST/RPC calls using `fetch` (the Supabase JavaScript client is not currently a dependency).
 - `src/index.css` contains global and responsive UI styling.
-- `src/App.test.tsx` covers demo UI flows and expected behavior.
-- `src/services/supabase.test.ts` covers Supabase sign-up and registry creation request mapping.
+- `src/App.test.tsx` covers demo UI flows, Supabase gift management, guest actions, and couple activity management.
+- `src/services/supabase.test.ts` covers Supabase auth, registry mapping, wishlist loading, protected gift writes, member activity reads, and member action RPC mapping.
 - `src/vite-env.d.ts` supplies Vite environment variable types.
 - `vite.config.ts` configures Vite, Tailwind, Vitest, and jsdom.
 
@@ -100,13 +107,13 @@ Screen hash names in `src/App.tsx`:
 | `#login` | Couple sign-in | Supabase Auth connected |
 | `#create-account` | Couple registration | Supabase Auth connected |
 | `#create-registry` | Create/edit wedding details | Supabase connected |
-| `#dashboard` | Couple overview and sharing | Registry details connected; gift data not connected |
-| `#edit-gift` | Add/edit gift | Demo only; gated in Supabase mode |
-| `#public-registry?slug=...` | Public wishlist | Supabase registry/details read connected; gift rendering/actions still in progress |
-| `#reserve-gift` | Guest full reservation | Demo only; gated in Supabase mode |
-| `#contribute` | Guest contribution | Demo only; gated in Supabase mode |
-| `#guest-status` | Guest's private status | Demo only; not wired |
-| `#management` | Couple activity management | Demo placeholder |
+| `#dashboard` | Couple overview and sharing | Registry details and saved gifts connected; links to guest activity management |
+| `#edit-gift` | Add/edit gift | Supabase gift/category save and priority persistence connected |
+| `#public-registry?slug=...` | Public wishlist | Published gifts, availability, progress, and configured offline instructions connected; guest actions enabled |
+| `#reserve-gift` | Guest full reservation | Supabase Edge Function and browser-local demo connected |
+| `#contribute` | Guest contribution | Supabase Edge Function, offline instructions, and browser-local demo connected |
+| `#guest-status?token=...` | Guest's private status | Secure token lookup, reservation cancellation, payment reporting, and demo status connected |
+| `#management` | Couple activity management | RLS-protected reservation/payment-report/unpaid-pledge reads; release, verify, and reject actions use member RPCs |
 
 ### Supabase backend
 
@@ -114,7 +121,8 @@ Screen hash names in `src/App.tsx`:
 - `supabase/migrations/20261110000000_initial_schema.sql` defines the Phase 1 schema, business functions, RLS/grants, storage policies, and two scheduled jobs.
 - `supabase/migrations/20261113000000_one_registry_per_owner.sql` adds the owner uniqueness constraint.
 - `supabase/migrations/20261115000000_registry_owner_read_policy.sql` lets an authenticated owner read their own draft registry, including in an insert response.
-- `supabase/tests/database/initial_schema.test.sql` contains 37 pgTAP assertions and runs in a rollback transaction.
+- `supabase/migrations/20261116000000_registry_gift_management.sql` adds atomic member-authorized gift save/order and reorder operations.
+- `supabase/tests/database/initial_schema.test.sql` contains 47 pgTAP assertions and runs in a rollback transaction.
 - `supabase/functions/_shared/public_api.ts` provides guest-request validation, CORS, IP-based rate limiting, service RPC calls, and error mapping.
 - `supabase/functions/create-reservation/index.ts` calls `create_guest_reservation` (10 writes/minute/IP).
 - `supabase/functions/create-group-pledge/index.ts` calls `create_group_pledge` (10 writes/minute/IP).
@@ -125,7 +133,7 @@ Screen hash names in `src/App.tsx`:
 
 ## 5. Database model
 
-The initial migration creates 13 application tables in `public` and a private rate-limit table:
+The initial migration creates 13 application tables in `public`; the payment-recipient migration adds a fourteenth table, alongside the private rate-limit table:
 
 | Table | Responsibility |
 |---|---|
@@ -138,7 +146,8 @@ The initial migration creates 13 application tables in `public` and a private ra
 | `guests` | Name and one email-or-phone contact per registry |
 | `reservations` | Full-gift reservations and cancellation/release state |
 | `contributions` | Pledged/payment-reported/verified/rejected/expired/released amounts |
-| `payment_settings` | Couple's UPI, bank, cash, and general instructions |
+| `payment_settings` | Bank, cash, and general offline payment instructions |
+| `registry_payment_recipients` | Named couple/family UPI IDs and private QR image paths |
 | `guest_access_tokens` | Hashed, expiring, revocable guest access tokens |
 | `audit_logs` | Reservation, contribution, and membership event history |
 | `notifications` | Registry-member notifications and read state |
@@ -149,6 +158,7 @@ Notable SQL functions include:
 - Auth/member setup: `handle_new_auth_user`, `add_registry_owner_member`, `is_registry_member`, `is_registry_owner`.
 - Safe guest read/write operations: `get_public_registry`, `create_guest_reservation`, `create_group_pledge`, `get_guest_activity`, `cancel_guest_reservation`, `report_guest_payment`.
 - Couple operations: `review_contribution`, `release_reservation`, `release_unpaid_pledge`, `invite_registry_partner`, `accept_registry_invitation`, `revoke_registry_partner`.
+- Payment management: `save_registry_payment_settings` atomically updates member-only payment settings and recipient lists.
 - Operations: `expire_stale_pledges`, `consume_public_rate_limit`.
 
 Postgres RLS is enabled on every application table. Anonymous guest writes are not granted direct RPC access; trusted Edge Functions call write RPCs using the service role. The service role must remain server-side. Anonymous public registry details are returned through `get_public_registry` only for published slugs.
@@ -237,7 +247,7 @@ Most recently observed during this work:
 
 - Node.js `v22.23.5` and npm `10.9.9` were installed in the user home directory and are runnable when `~/.local/bin` is on PATH.
 - `~/.zprofile` was updated so new zsh login terminals include the user-local Node.js tools in PATH.
-- `npm test` passed: 27 tests across the UI and Supabase client test files.
+- `npm test` passed: 36 tests across the UI and Supabase client test files, including mocked reservation/cancellation, pledge/payment-report, and couple release/verify/reject workflows.
 - `npm run build` passed: TypeScript check and Vite production build succeeded.
 - The UI tests were made deterministic by selecting the intended gift card and resetting the hash route after prior queued browser events.
 - Editor diagnostics reported no TypeScript issues in the changed app and Supabase files.
@@ -245,7 +255,10 @@ Most recently observed during this work:
 - Supabase CLI `3.1.0` is available via `npx supabase`.
 - Docker Desktop `4.99.0` and Docker Engine `29.9.3` are installed and running on Apple silicon.
 - `npx supabase start` succeeded; all 12 local Supabase containers started, with the database and supporting services healthy.
-- `npx supabase test db` passed all 37 pgTAP assertions in `supabase/tests/database/initial_schema.test.sql`.
+- `npx supabase test db` passed all 47 pgTAP assertions in `supabase/tests/database/initial_schema.test.sql`.
+- Local storage integration verified private QR upload, atomic two-recipient save, signed image access while published, denial of new signing requests after unpublishing, and removal of disposable test data.
+- Public registry responses include guest-safe committed/verified totals, reservation availability, and configured offline payment instructions; guest names and contact details remain private.
+- Local authenticated API integration passed 14 gift-management checks, including category/gift persistence, atomic priority changes, invalid-order rollback, anonymous write denial, and public ordered wishlist reads. Temporary Auth and registry data were removed.
 - `npx deno test --allow-env supabase/functions/tests/public_api.deno.ts` passed the request validation, CORS, body-size, rate-limit, and fail-closed unit checks.
 - All five guest Edge Functions passed 20 local HTTP integration checks: reservation and cancellation, contribution pledge and payment reporting, guest status privacy, invalid inputs, CORS/method rejection, reservation/contribution conflicts, and pledge capacity. Temporary test records and the generated local function secret were removed.
 - Hosted Supabase Auth/registry flows and browser integration with guest endpoints remain unverified; no remote Supabase project has been configured.
@@ -267,18 +280,18 @@ npx supabase test db
 npx supabase functions serve --env-file supabase/functions/.env.local
 ```
 
-The pgTAP plan currently declares 37 assertions. If adding/removing assertions, update `select plan(...)` and verify the actual count.
+The pgTAP plan currently declares 47 assertions. If adding/removing assertions, update `select plan(...)` and verify the actual count.
 
 ## 8. Recommended continuation roadmap
 
 Complete work in small vertical slices, keeping the browser-local demo working:
 
-1. **Local backend validation (complete):** Docker Engine and the local Supabase stack run; migrations apply, all 36 pgTAP assertions pass, the Deno request/rate-limit test passes, and all five Edge Functions pass local HTTP integration checks.
+1. **Local backend validation (complete):** Docker Engine and the local Supabase stack run; migrations apply, all 47 pgTAP assertions pass, the Deno request/rate-limit test passes, and all five Edge Functions pass local HTTP integration checks.
 2. **Configure local app connection (complete):** use the URL and anon key from `npx supabase status` in ignored `.env.local`. Local Auth confirmation through Mailpit, sign-in, session restore, sign-out, registry create/edit, publishing, and public slug fetch have been verified. A registry insert-response RLS policy issue was fixed with an owner-only read allowance and regression assertion. Hosted Supabase remains unconfigured and unverified.
-3. **Connect gift/category management:** persist gift records and sort order with RLS; preserve gift product links and category; test editing/reordering and public read. Handle unique slug collisions and one-registry constraints with actionable form errors.
-4. **Connect guest workflows:** wire existing create-reservation/create-group-pledge Edge Functions, private status/cancel/report endpoints, and secure token hand-off. Do not call privileged RPCs directly from the browser.
-5. **Connect member management:** query guest reservations/reports under RLS; wire release and contribution review. Only verified contribution values count as collected.
-6. **Payment instructions and UI polish:** configure/read offline instructions securely; add clear loading/error/retry states, responsive and accessibility checks, notifications as scoped.
+3. **Connect gift/category management (core complete):** gift details, categories, priority ordering, dashboard reads, and published wishlist reads persist through Supabase. Next, add gift image storage/upload and test the UI against the local Auth project.
+4. **Connect guest workflows (local browser E2E complete):** public availability and payment-instruction display, Edge Function reservation/pledge creation, token-based status checks, reservation cancellation, and payment reporting are wired. Local E2E exercised group pledging and payment reporting against Auth, PostgREST, and Edge Functions.
+5. **Connect member management (owner browser E2E complete):** RLS-protected activity reads, reservation/unpaid-pledge release, and payment verification/rejection are wired. Local E2E exercised owner review and rejection; still test collaborator permissions and the other management actions against local Supabase.
+6. **Payment instructions and UI polish (payment editor complete):** the couple dashboard can save payment instructions, and guests see them on published registries. A disposable authenticated local Supabase round trip and published-only visibility check passed. Continue with async conflict/retry states, responsive and accessibility checks, and notifications as scoped.
 7. **Security/concurrency checks:** test public privacy/RLS, tokens, collaborator role boundaries, parallel reservations, amount allocation limits, pledge expiry, report/review/rejection/re-report transitions.
 8. **Deployment:** configure production Supabase Auth redirects, function secrets/CORS, storage policies, and hosting environment; run production smoke tests. Do not deploy until the authorization and concurrency requirements pass.
 
@@ -289,7 +302,7 @@ Complete work in small vertical slices, keeping the browser-local demo working:
 - Prefer small, end-to-end slices with tests. Keep all demo behavior available when Supabase configuration is absent.
 - Do not silently fall back from a configured-but-failing Supabase project to localStorage; show the service error.
 - Keep identity and business rules server-authoritative. The UI can improve feedback but cannot replace RLS, unique constraints, atomic RPCs, or server validation.
-- Do not broaden public reads. Guest identity, contacts, member records, payment settings, and activity must remain private.
+- Do not broaden public reads. Guest identity, contacts, member records, and activity remain private. Only the couple's offline payment instructions are intentionally included in a published registry; settings management remains member-only.
 - Never put service-role credentials, guest tokens, passwords, rate-limit secrets, or private account data in frontend bundles or committed documentation.
 - Use clear loading, empty, unavailable, conflict, and success states; do not display a demo success for a failed database operation.
 - Update relevant tests and documentation when behavior changes. Validate with `npm test`, `npm run build`, and `npx supabase test db` as applicable.
