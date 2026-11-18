@@ -103,11 +103,12 @@ describe("ShaadiLedger registry flows", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add a gift/i }));
     expect(screen.getByRole("heading", { name: /Add a little wish/i })).toBeTruthy();
     expect(screen.queryByLabelText(/Gift type/i)).toBeNull();
+    expect(screen.queryByLabelText("Category")).toBeNull();
+    expect(screen.queryByText("The gift thumbnail uses the store icon from this product link.")).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: "A garden table" } });
     fireEvent.change(screen.getByLabelText("What makes it special? (optional)"), { target: { value: "For long dinners" } });
     fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "12500" } });
-    fireEvent.change(screen.getByLabelText("Category"), { target: { value: "For our home" } });
     fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
 
     expect(await screen.findByText("A garden table")).toBeTruthy();
@@ -221,6 +222,7 @@ describe("ShaadiLedger registry flows", () => {
       value: { writeText },
     });
     await createRegistry();
+    expect(screen.getByText(/local development link.*only opens on this computer/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Copy link/i }));
     expect(await screen.findByText("Link copied!")).toBeTruthy();
     expect(writeText).toHaveBeenCalledWith(expect.stringMatching(/#public-registry\?slug=maya-neel/));
@@ -300,7 +302,7 @@ describe("ShaadiLedger registry flows", () => {
     expect(screen.getByText(/Payment proof is not collected/i)).toBeTruthy();
   });
 
-  it("saves gifts, categories, and priority through Supabase and displays the public wishlist", async () => {
+  it("saves gifts and priority through Supabase without exposing categories in the wishlist", async () => {
     vi.resetModules();
     vi.stubEnv("VITE_SUPABASE_URL", "http://127.0.0.1:54321");
     vi.stubEnv("VITE_SUPABASE_ANON_KEY", "local-anon-key");
@@ -388,7 +390,7 @@ describe("ShaadiLedger registry flows", () => {
         const request = JSON.parse(String(init?.body)) as { p_gift_ids: string[]; p_name: string; p_category_name: string };
         expect(request.p_gift_ids).toEqual([newGiftId, oldGiftId]);
         expect(request.p_name).toBe("A garden table");
-        expect(request.p_category_name).toBe("Travel plans");
+        expect(request.p_category_name).toBe("Wishlist");
         databaseGifts.unshift({
           id: newGiftId,
           category_id: "category-travel",
@@ -459,14 +461,14 @@ describe("ShaadiLedger registry flows", () => {
     fireEvent.change(screen.getByLabelText("Gift name"), { target: { value: "A garden table" } });
     fireEvent.change(screen.getByLabelText("What makes it special? (optional)"), { target: { value: "For long dinners" } });
     fireEvent.change(screen.getByLabelText("Gift value"), { target: { value: "24000" } });
-    fireEvent.change(screen.getByLabelText("Category"), { target: { value: "Travel plans" } });
     fireEvent.change(screen.getByLabelText("Wishlist priority"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: /Add gift to wishlist/i }));
 
     expect(await screen.findByText("A garden table")).toBeTruthy();
-    expect(screen.getByText("Priority 1 · Travel plans")).toBeTruthy();
+    expect(screen.getByText("Priority 1")).toBeTruthy();
+    expect(screen.queryByText("For our home")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Move A garden table down" }));
-    await waitFor(() => expect(screen.getByText("Priority 1 · For our home")).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText("Priority 1")).toHaveLength(1));
     expect(fetchMock).toHaveBeenCalledWith(
       "http://127.0.0.1:54321/rest/v1/rpc/reorder_registry_gifts",
       expect.objectContaining({ method: "POST" }),
@@ -476,6 +478,8 @@ describe("ShaadiLedger registry flows", () => {
     expect(await screen.findByRole("heading", { name: /Our little wishlist/i })).toBeTruthy();
     const chairHeading = screen.getByRole("heading", { name: "A reading chair" });
     const tableHeading = screen.getByRole("heading", { name: "A garden table" });
+    expect(screen.queryByText("For our home")).toBeNull();
+    expect(screen.queryByText("Wishlist")).toBeNull();
     expect(chairHeading.compareDocumentPosition(tableHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -696,7 +700,7 @@ describe("ShaadiLedger registry flows", () => {
         status: "pledged",
         created_at: "2026-11-15T15:00:00Z",
         payment_reported_at: null,
-        expires_at: "2026-11-18T15:00:00Z",
+        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       },
     ];
     const guests = [

@@ -13,7 +13,7 @@ ShaadiLedger is a personalized wedding gift registry. Couples publish a wishlist
 - Couple account and one registry for the couple.
 - Registry owner can invite one partner as a collaborator. Both verified members can manage the registry.
 - Wedding names/date, welcome message, unique public link, publish/unpublish, and share.
-- Gifts with categories, values, optional product links, and priority order; a store favicon is derived from the product link for the gift thumbnail.
+- Gifts with values, optional product links, and priority order; a store favicon is derived from the product link for the gift thumbnail.
 - On the public wishlist, guests choose whether to reserve the full gift or contribute an amount. The first active choice determines availability: a reservation blocks contributions, while contributions block a full reservation and allow more contributions up to the gift value.
 - A guest can cancel their own reservation; a couple member can release it.
 - Guests pay the couple directly using offline UPI, bank transfer, or cash instructions. No payment gateway or proof upload.
@@ -87,7 +87,7 @@ Business statuses (such as `reserved`, `pledged`, `payment_reported`, `verified`
 | 2 | Couple registration / login | Couple | Create an account or sign in. |
 | 3 | Create wedding registry | Couple | Enter names, wedding date, welcome message, and initial settings. |
 | 4 | Couple dashboard | Couple | See registry status, gifts, reservations, contributions, and notifications. |
-| 5 | Add / edit gift | Couple | Manage gifts, images, categories, links, and values. |
+| 5 | Add / edit gift | Couple | Manage gifts, images, links, values, and wishlist priority. |
 | 6 | Public wedding wishlist | Guest | Browse gifts, choose full reservation or contribution, and see availability/progress. |
 | 7 | Gift details and reservation | Guest | Reserve a gift in full with name and one contact method. |
 | 8 | Contribution and payment instructions | Guest | Contribute an amount, view offline instructions, and report payment. |
@@ -149,7 +149,7 @@ This specification describes the intended Phase 1 behavior for the 10 product ar
 #### 5. Add / edit gift
 
 - **Goal:** Let a verified member create or update a gift.
-- **Content:** Gift name, description, category, value, wishlist priority, and optional product link. The couple does not choose the guest's giving method.
+- **Content:** Gift name, description, value, wishlist priority, and optional product link. The couple does not choose the guest's giving method.
 - **Actions/navigation:** Save → dashboard/list; cancel/back returns without saving. Delete/archive requires confirmation and explains impact if there are active reservations or contributions.
 - **States:** Validate name, positive INR value, HTTP(S) product URLs, and valid priority. If a store favicon is unavailable, show a gift-name monogram; gift actions remain disabled while saving.
 - **Mobile:** Single column; product URL field is easy to paste into; sticky or clearly visible save action.
@@ -157,10 +157,10 @@ This specification describes the intended Phase 1 behavior for the 10 product ar
 #### 6. Public wedding wishlist
 
 - **Goal:** Let guests understand the couple’s wishes and select a gift without signing in.
-- **Content:** Published couple names/date/welcome note, gift cards grouped by category, full-reservation availability, contribution capacity and verified progress, and a discreet offline-payment explanation.
+- **Content:** Published couple names/date/welcome note, gift cards, full-reservation availability, contribution capacity and verified progress, and a discreet offline-payment explanation.
 - **Actions/navigation:** Gift → guest's choice of full reservation or contribution. Copy/share registry link may be offered. Never display reservation guest names, contact information, pending payment reports, or member details.
 - **States:** Loading skeleton; published registry with no gifts has a friendly empty state; unknown/unpublished slug has a not-found/private message; fetch error offers retry. A reserved gift cannot be contributed toward. Once contributions start, guests may continue contributing within capacity but cannot reserve the full gift. A fully funded gift is shown as complete.
-- **Mobile:** Single-column cards and category controls; avoid dense filters; show target/progress without relying on color alone.
+- **Mobile:** Single-column gift cards; show target/progress without relying on color alone.
 
 #### 7. Full gift reservation
 
@@ -256,7 +256,7 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 - [x] Add a follow-up constraint migration enforcing one registry per owner; assert it in pgTAP.
 - [ ] Re-run the updated migration and 41 database assertions in an isolated PostgreSQL-compatible test environment with Supabase API stubs.
 - [x] Run the migrations and 47 pgTAP assertions against local Supabase.
-- [x] Connect gift/category save, edit, dashboard reads, and priority order to atomic, membership-protected Supabase operations.
+- [x] Connect gift save, edit, dashboard reads, and priority order to atomic, membership-protected Supabase operations.
 - [x] Verify public wishlist gift reads and priority order through the safe registry RPC.
 - [x] Schedule stale-pledge expiry every 15 minutes and clean old rate-limit counters daily with `pg_cron`.
 - [x] Add rate-limited Edge Function wrappers for reservation, pledge, cancellation, payment report, and guest-status operations.
@@ -271,7 +271,7 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 - [x] Connect account sign-up/sign-in and session restoration to Supabase Auth; registry insertion creates the database owner membership.
 - [ ] Implement partner invitation and verified collaborator access.
 - [x] Implement registry create/edit/publish and public registry detail reads with a unique public slug.
-- [ ] Implement gift/category/image management and public wishlist.
+- [ ] Implement gift/image management and public wishlist.
 
 ### 4. Reservations and contributions
 
@@ -306,7 +306,7 @@ Guest/contact data must not be publicly readable. A registry has one creator and
 
 ## Current implementation status
 
-Without Supabase settings, the app retains its browser-local demo: sign-up/sign-in, registry creation, wishlist gift editing/priority, guest reservation/contribution examples, and link copying. With `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` configured, account sign-up/sign-in, session restoration, registry create/edit, publish/unpublish, gift/category management, priority persistence, payment-instruction editing, multiple named UPI recipients, QR uploads, public availability/payment-instruction reads, guest reservations/contributions, private guest status/cancel/report actions, and couple-side reservation/payment review use Supabase. The existing UPI ID is preserved as the first recipient; QR images are kept in a private bucket and served through 10-minute signed links while a registry is published or to its members. Members can release reservations and unpaid pledges, and verify or reject reported payments; private guest contacts are displayed only in the authenticated management screen. Notifications, gift image uploads, and partner invitation UX remain outstanding. Guest access tokens are carried in the URL fragment and are not stored in localStorage. Validation currently passes 39 frontend tests, the TypeScript/Vite production build, and all 47 local pgTAP assertions. Local checks verified private QR upload, multi-recipient save, signed image access for a published registry, and denial of new signing requests after unpublishing. Earlier disposable test accounts and records were removed; no real payment was made. No remote Supabase project has been configured. The [developer guide](./PROJECT_GUIDE.md) records setup and the current roadmap.
+Without Supabase settings, the app retains its browser-local demo: sign-up/sign-in, registry creation, wishlist gift editing/priority, guest reservation/contribution examples, and link copying. With `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` configured, account sign-up/sign-in, session restoration, registry create/edit, publish/unpublish, gift management, priority persistence, payment-instruction editing, multiple named UPI recipients, QR uploads, public availability/payment-instruction reads, guest reservations/contributions, private guest status/cancel/report actions, and couple-side reservation/payment review use Supabase. Gift categories are no longer part of the couple or guest UI; the existing database metadata is retained for compatibility. The existing UPI ID is preserved as the first recipient; QR images are kept in a private bucket and served through 10-minute signed links while a registry is published or to its members. Members can release reservations and unpaid pledges, and verify or reject reported payments; private guest contacts are displayed only in the authenticated management screen. Notifications, gift image uploads, and partner invitation UX remain outstanding. Guest access tokens are carried in the URL fragment and are not stored in localStorage. Validation currently passes 39 frontend tests, the TypeScript/Vite production build, and all 47 local pgTAP assertions. Local checks verified private QR upload, multi-recipient save, signed image access for a published registry, and denial of new signing requests after unpublishing. Earlier disposable test accounts and records were removed; no real payment was made. No remote Supabase project or deployed public website has been configured. Links created on localhost only work on that computer while the development server is running. The [developer guide](./PROJECT_GUIDE.md) records setup and the current roadmap.
 
 ## Run and test locally
 

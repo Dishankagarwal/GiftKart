@@ -293,6 +293,10 @@ function getRegistryLink(registry: Registry): string {
   return `${window.location.origin}${window.location.pathname}#public-registry?slug=${encodeURIComponent(registry.slug)}`;
 }
 
+function isLocalDevelopmentHost(): boolean {
+  return ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
+}
+
 function getExternalUrl(value: string): string | null {
   try {
     const url = new URL(value);
@@ -1528,7 +1532,9 @@ function Dashboard({
           <button className="button button-outline button-wide" onClick={handleCopyLink} disabled={remoteMode && !registry.isPublished}>Copy link</button>
           {copyMessage && <p className={copyMessage === "Link copied!" ? "copy-message" : "form-error"} role="status">{copyMessage}</p>}
           {publishMessage && <p className={publishMessage.startsWith("Registry is") ? "copy-message" : "form-error"} role="status">{publishMessage}</p>}
-          <p className="share-link-help">{remoteMode
+          <p className="share-link-help">{isLocalDevelopmentHost()
+            ? "This is a local development link. It only opens on this computer while the app server is running; guests need the deployed website URL."
+            : remoteMode
             ? "Registry details, wishlist gifts, and guest activity are stored securely in Supabase."
             : "Preview links use browser-local demo data. Cross-device sharing needs the live Supabase connection."}</p>
           {remoteMode && <button className="button button-outline button-wide" onClick={() => navigate("management")}>Review guest activity</button>}
@@ -1766,7 +1772,7 @@ function GiftRow({
   return (
     <div className="gift-row">
       <span className="gift-thumb"><GiftImage gift={gift} className="gift-thumb-artwork" /></span>
-      <span className="gift-row-copy"><b>{gift.name}</b><small>Priority {gift.priority} · {gift.category}</small></span>
+      <span className="gift-row-copy"><b>{gift.name}</b><small>Priority {gift.priority}</small></span>
       <span className="gift-row-price">{money(gift.price)}</span>
       <button type="button" className="text-button gift-edit-button" onClick={onEdit}>Edit</button>
       <div className="gift-priority-actions" aria-label={`${gift.name} priority`}>
@@ -1826,20 +1832,11 @@ function EditGift({
       setError("The gift value cannot be lower than its active reservation or committed contributions.");
       return;
     }
-    const category = String(form.get("category") ?? "").trim();
-    if (!category || category.length > 80) {
-      setError("Enter a category with 1 to 80 characters.");
-      return;
-    }
-    const emojis: Record<string, string> = {
-      "For our home": "🏡",
-      "Our next adventure": "✈️",
-      "Something meaningful": "🎁",
-    };
+    const category = existingGift?.category ?? "Wishlist";
     const gift: Gift = {
       id: existingGift?.id ?? crypto.randomUUID(),
       category,
-      emoji: emojis[category] ?? "🎁",
+      emoji: existingGift?.emoji ?? "🎁",
       name,
       description: String(form.get("description") ?? "").trim(),
       price,
@@ -1878,26 +1875,18 @@ function EditGift({
         <form onSubmit={submit}>
           <label>Gift name<input name="name" defaultValue={existingGift?.name} placeholder="e.g. A little reading nook" required /></label>
           <label>What makes it special? <span className="optional">(optional)</span><textarea name="description" defaultValue={existingGift?.description} rows={3} placeholder="Add a note for your guests..." /></label>
-          <div className="field-row">
-            <label>Gift value<input name="price" type="number" min="1" step="0.01" defaultValue={existingGift?.price} placeholder="e.g. 18500" required /></label>
-            <label>Category<input name="category" list="gift-category-options" defaultValue={existingGift?.category ?? (registry?.categories ?? [])[0] ?? "For our home"} placeholder="e.g. For our home" required />
-              <datalist id="gift-category-options">
-                {[...new Set(["For our home", "Our next adventure", "Something meaningful", ...(registry?.categories ?? [])])].map((category) => <option key={category} value={category} />)}
-              </datalist>
-            </label>
-          </div>
+          <label>Gift value<input name="price" type="number" min="1" step="0.01" defaultValue={existingGift?.price} placeholder="e.g. 18500" required /></label>
           <div className="field-row">
             <label>Wishlist priority<select name="priority" defaultValue={String(initialPriority)}>
               {Array.from({ length: priorityLimit }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
             </select></label>
           </div>
           <label>Product link <span className="optional">(optional)</span><input name="link" type="url" defaultValue={existingGift?.link} placeholder="https://shop.example.com/gift" /></label>
-          <p className="field-note">The gift thumbnail uses the store icon from this product link.</p>
           {error && <p className="form-error" role="alert">{error}</p>}
           <button className="button button-dark button-wide" type="submit" disabled={saving}>{saving ? "Saving..." : existingGift ? "Save gift changes" : "Add gift to wishlist"} <span aria-hidden="true">↗</span></button>
           <button className="text-button" type="button" onClick={() => navigate("dashboard")}>Back to dashboard</button>
         </form>
-        <p className="prototype-help">{remoteMode ? "Gift details, categories, and priority are saved to Supabase." : "Guest contribution choices are shown on the public wishlist. Demo gifts are saved in this browser only."}</p>
+        <p className="prototype-help">{remoteMode ? "Gift details and wishlist priority are saved to Supabase." : "Guest contribution choices are shown on the public wishlist. Demo gifts are saved in this browser only."}</p>
       </div>
     </section>
   );
@@ -1985,7 +1974,6 @@ function PublicRegistry({
                   <GiftImage gift={gift} className="wishlist-artwork" />
                 </div>
                   <div className="wishlist-card-body">
-                    <Eyebrow>{gift.category}</Eyebrow>
                     <h3>{gift.name}</h3><p>{gift.description}</p>
                     <p className="gift-price">{money(gift.price)}</p>
                     {productUrl && <a className="product-link" href={productUrl} target="_blank" rel="noopener noreferrer">View gift online <span aria-hidden="true">↗</span></a>}
@@ -2081,7 +2069,7 @@ function ReserveGift({
           <div className="selected-gift">
             <GiftImage gift={gift} className="selected-gift-artwork" />
             <div>
-              <b>{gift.name}</b><small>{gift.category} · {money(gift.price)}</small>
+              <b>{gift.name}</b><small>{money(gift.price)}</small>
               {productUrl && <a className="product-link" href={productUrl} target="_blank" rel="noopener noreferrer">View gift online <span aria-hidden="true">↗</span></a>}
             </div>
           </div>
@@ -2182,7 +2170,7 @@ function Contribute({
           <div className="selected-gift">
             <GiftImage gift={gift} className="selected-gift-artwork" />
             <div>
-              <b>{gift.name}</b><small>{gift.category} · {money(gift.price)}</small>
+              <b>{gift.name}</b><small>{money(gift.price)}</small>
               {productUrl && <a className="product-link" href={productUrl} target="_blank" rel="noopener noreferrer">View gift online <span aria-hidden="true">↗</span></a>}
             </div>
           </div>

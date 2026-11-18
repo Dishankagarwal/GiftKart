@@ -21,7 +21,7 @@ The guiding principles are:
 - One owner account and one wedding registry per couple.
 - Optional verified partner collaboration (database support exists; UI integration remains).
 - Registry names, date, city, welcome note, unique slug, and draft/published state.
-- Wishlist gifts with category, INR value, product link, and priority order.
+- Wishlist gifts with INR value, optional product link, and priority order.
 - Guest choice of full reservation **or** contribution. The couple does not set a gift type.
 - Direct/offline payment instructions and guest payment reporting.
 - Couple review of reported payments; only verified amounts count as collected.
@@ -41,7 +41,7 @@ The guiding principles are:
 The project has two runtime modes:
 
 1. **Browser-local demo** (default when no Supabase variables are configured): the existing React UI demonstrates account/registry creation, gift management and priority, guest reservation/contribution examples, and link copying. Data is saved in this browser only and is not authentication or a shared database.
-2. **Supabase mode** (requires both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`): account sign-up/sign-in, session persistence, registry create/edit, publish/unpublish, gift/category management, priority ordering, public wishlist availability/payment-instruction reads, and guest reservation/contribution actions use Supabase.
+2. **Supabase mode** (requires both `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`): account sign-up/sign-in, session persistence, registry create/edit, publish/unpublish, gift management, priority ordering, public wishlist availability/payment-instruction reads, and guest reservation/contribution actions use Supabase.
 
 ### Working in Supabase mode
 
@@ -50,8 +50,8 @@ The project has two runtime modes:
 - Browser session storage, restore, refresh when an API request needs a fresh token, and sign-out.
 - Create or edit registry details; creating the row lets the database trigger create its owner membership.
 - Publish/unpublish and fetch a published registry by public slug through the safe database RPC.
-- Add/edit gifts and assign categories; gift save and complete priority order are committed atomically through member-authorized database functions.
-- Load saved gift categories and active gifts in the couple dashboard; read published gifts through the restricted public registry RPC.
+- Add/edit gifts and order the wishlist; gift saves and complete priority order are committed atomically through member-authorized database functions. Category metadata remains in the database for compatibility but is not shown in the UI.
+- Load active gifts in the couple dashboard; read published gifts through the restricted public registry RPC.
 - Guests can create full reservations and group pledges through the rate-limited Edge Functions. Availability and verified/committed amounts come from the public registry RPC.
 - Guests can check a reservation or contribution through its private token link, cancel their reservation, and report/re-report an offline payment.
 - Published registries display named UPI recipients, their UPI IDs and uploaded QR codes, plus bank, cash, and general payment instructions when configured.
@@ -108,7 +108,7 @@ Screen hash names in `src/App.tsx`:
 | `#create-account` | Couple registration | Supabase Auth connected |
 | `#create-registry` | Create/edit wedding details | Supabase connected |
 | `#dashboard` | Couple overview and sharing | Registry details and saved gifts connected; links to guest activity management |
-| `#edit-gift` | Add/edit gift | Supabase gift/category save and priority persistence connected |
+| `#edit-gift` | Add/edit gift | Supabase gift save and priority persistence connected |
 | `#public-registry?slug=...` | Public wishlist | Published gifts, availability, progress, and configured offline instructions connected; guest actions enabled |
 | `#reserve-gift` | Guest full reservation | Supabase Edge Function and browser-local demo connected |
 | `#contribute` | Guest contribution | Supabase Edge Function, offline instructions, and browser-local demo connected |
@@ -288,7 +288,7 @@ Complete work in small vertical slices, keeping the browser-local demo working:
 
 1. **Local backend validation (complete):** Docker Engine and the local Supabase stack run; migrations apply, all 47 pgTAP assertions pass, the Deno request/rate-limit test passes, and all five Edge Functions pass local HTTP integration checks.
 2. **Configure local app connection (complete):** use the URL and anon key from `npx supabase status` in ignored `.env.local`. Local Auth confirmation through Mailpit, sign-in, session restore, sign-out, registry create/edit, publishing, and public slug fetch have been verified. A registry insert-response RLS policy issue was fixed with an owner-only read allowance and regression assertion. Hosted Supabase remains unconfigured and unverified.
-3. **Connect gift/category management (core complete):** gift details, categories, priority ordering, dashboard reads, and published wishlist reads persist through Supabase. Next, add gift image storage/upload and test the UI against the local Auth project.
+3. **Connect gift management (core complete):** gift details, priority ordering, dashboard reads, and published wishlist reads persist through Supabase. Category metadata is retained internally but removed from the couple and guest UI. Next, add gift image storage/upload and test the UI against the local Auth project.
 4. **Connect guest workflows (local browser E2E complete):** public availability and payment-instruction display, Edge Function reservation/pledge creation, token-based status checks, reservation cancellation, and payment reporting are wired. Local E2E exercised group pledging and payment reporting against Auth, PostgREST, and Edge Functions.
 5. **Connect member management (owner browser E2E complete):** RLS-protected activity reads, reservation/unpaid-pledge release, and payment verification/rejection are wired. Local E2E exercised owner review and rejection; still test collaborator permissions and the other management actions against local Supabase.
 6. **Payment instructions and UI polish (payment editor complete):** the couple dashboard can save payment instructions, and guests see them on published registries. A disposable authenticated local Supabase round trip and published-only visibility check passed. Continue with async conflict/retry states, responsive and accessibility checks, and notifications as scoped.
